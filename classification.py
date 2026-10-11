@@ -54,6 +54,7 @@ class CWEGraph:
             raise ValueError("CWE catalog is empty")
 
     def distance(self, first, second):
+        first, second = normalize_label(first), normalize_label(second)
         if first not in self.labels or second not in self.labels:
             return None
         queue = deque([(first, 0)])

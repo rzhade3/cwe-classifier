@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,6 +16,7 @@ class ExperimentTests(unittest.TestCase):
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         self.graph = CWEGraph(fixture.path)
+        self.graph_path = fixture.path
         self.examples = [{"id": "a", "text": "untrusted input", "labels": ["1"],
                           "split": "test"}]
         self.directory = tempfile.TemporaryDirectory()
@@ -55,6 +58,25 @@ class ExperimentTests(unittest.TestCase):
                 self.write({**record, key: value})
                 with self.assertRaises(ValueError):
                     load_one_shot(self.path, self.examples, self.graph)
+
+    def test_cli_matched_comparison(self):
+        benchmark = Path(self.directory.name) / "benchmark.jsonl"
+        benchmark.write_text(json.dumps(self.examples[0]) + "\n", encoding="utf-8")
+        output = Path(self.directory.name) / "results"
+        record = self.record()
+        self.write(record)
+        completed = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("experiment.py")), "run",
+             "--catalog", str(self.graph_path), "--benchmark", str(benchmark),
+             "--output", str(output), "--methods", "flat", "greedy", "beam", "one-shot",
+             "--one-shot-predictions", str(self.path), "--bootstrap-samples", "20"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        summary = json.loads((output / "summary.json").read_text())
+        self.assertEqual(len(summary["paired_accuracy_intervals"]), 6)
+        self.assertEqual(summary["metrics"]["one-shot"]["mean_hierarchical_distance"], 0)
+        self.assertIsNone(summary["metrics"]["flat"]["total_cost"])
 
 
 if __name__ == "__main__":

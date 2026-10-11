@@ -52,8 +52,37 @@ class LoaderTests(unittest.TestCase):
             example("test", "  unsafe USER   input  "),
             example("third", "Different input")])
         self.assertEqual([record["id"] for record in examples], ["third"])
+        self.assertEqual(audit["cross_split_overlap"], 2)
+        self.assertEqual(audit["duplicate_text"], 0)
+        self.assertEqual(audit["wrong_split"], 0)
+
+    def test_cross_split_overlap_is_order_independent(self):
+        records = [
+            example("test", "Unsafe CWE-79 user input"),
+            example("dev", "unsafe USER input", split="dev")]
+        for ordered in (records, records[::-1]):
+            for split in ("test", "dev"):
+                with self.subTest(order=ordered, split=split):
+                    examples, audit = self.load(ordered, split=split)
+                    self.assertEqual(examples, [])
+                    self.assertEqual(audit["cross_split_overlap"], 2)
+
+    def test_training_text_overlap_is_order_independent(self):
+        records = [
+            example("test", "Unsafe CWE-79 user input"),
+            example("train", "unsafe USER input")]
+        for ordered in (records, records[::-1]):
+            with self.subTest(order=ordered):
+                examples, audit = self.load(ordered, training_ids=["train"])
+                self.assertEqual(examples, [])
+                self.assertEqual(audit["training_overlap"], 2)
+
+    def test_same_split_first_wins(self):
+        examples, audit = self.load([
+            example("first"), example("second", "unsafe USER input")])
+        self.assertEqual([record["id"] for record in examples], ["first"])
         self.assertEqual(audit["duplicate_text"], 1)
-        self.assertEqual(audit["wrong_split"], 1)
+        self.assertEqual(audit["cross_split_overlap"], 0)
 
     def test_ambiguity_overlap_and_unsupported_counts(self):
         examples, audit = self.load([
@@ -70,7 +99,8 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(audit["unsupported_labels"], {"CWE-89": 3})
         self.assertEqual(sum(audit[key] for key in (
             "accepted", "duplicate_text", "wrong_split", "ambiguous",
-            "training_overlap", "no_eligible_labels")), audit["records_total"])
+            "training_overlap", "cross_split_overlap", "no_eligible_labels")),
+            audit["records_total"])
 
     def test_ambiguous_text_still_prevents_leakage(self):
         examples, audit = self.load([
@@ -155,6 +185,9 @@ class MetricsTests(unittest.TestCase):
         scores = metrics(records, Graph())
         self.assertAlmostEqual(scores["exact_match_accuracy"], 1 / 3)
         self.assertAlmostEqual(scores["macro_f1"], 1 / 3)
+        self.assertIsInstance(scores["macro_f1_convention"], str)
+        self.assertIn("not standard multilabel macro-F1", scores["macro_f1_convention"])
+        self.assertIn("numerically smallest gold CWE", scores["macro_f1_convention"])
         self.assertEqual(scores["top_k_recall"][1], 1 / 3)
         self.assertEqual(scores["top_k_recall"][3], 2 / 3)
         self.assertEqual(scores["mean_hierarchical_distance"], 1)

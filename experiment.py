@@ -125,8 +125,12 @@ def main():
         if not isinstance(training_ids, list) or not all(isinstance(x, str) for x in training_ids):
             parser.error("--training-ids must contain a JSON array of strings")
     examples, audit = load_benchmark(
-        args.benchmark, graph.labels, split=args.split, training_ids=training_ids
+        args.benchmark, list(graph.labels), split=args.split, training_ids=training_ids
     )
+    # Evaluation utilities normalize gold labels with the CWE- prefix, while
+    # graph/scorer interfaces use the numeric CSV identifier.
+    for example in examples:
+        example["labels"] = [normalize_label(label) for label in example["labels"]]
     if not examples:
         parser.error("No eligible evaluation examples remain")
     if args.command == "prepare":
@@ -167,8 +171,12 @@ def main():
         "configuration": vars(args), "catalog_hash": catalog_fingerprint(graph),
         "benchmark_hash": fingerprint(examples), "audit": audit,
         "training_overlap": "known IDs excluded" if training_ids is not None else "unknown",
-        "metrics": {method: metrics(records, graph) for method, records in results.items()},
-        "paired_accuracy_intervals": paired_intervals(results, args.seed, args.bootstrap_samples),
+        "metrics": {method: metrics(records, graph)
+                    for method, records in results.items()},
+        "paired_accuracy_intervals": (
+            paired_intervals(results, args.seed, args.bootstrap_samples)
+            if len(results) > 1 else {}
+        ),
         "notes": [
             "Lexical scorer is an offline reference, not a learned classifier.",
             "Scores must be comparable across candidate sets; margin is tuned on dev only.",

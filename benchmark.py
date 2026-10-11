@@ -12,7 +12,7 @@ import json
 import math
 import random
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -88,8 +88,10 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None):
     """Load JSONL or an offline NVD JSON dump; return (examples, audit).
 
     Deduplication uses case-folded, whitespace-normalized, CWE-sanitized text
-    across *all* splits before filtering. First occurrence wins. All IDs and
-    records are validated even when excluded. Unsupported counts count each
+    across *all* splits before filtering. Every cross-split or training-text
+    overlap is excluded regardless of source order; within a split the first
+    occurrence wins. All IDs and records are validated even when excluded.
+    Unsupported counts count each
     normalized label once per source record, before any exclusions.
     NVD noinfo/other markers mean no known gold labels.
     """
@@ -126,9 +128,13 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None):
                 raise ValueError("Invalid JSONL on line {}".format(number)) from error
     audit = {"records_total": 0, "accepted": 0, "duplicate_text": 0,
              "wrong_split": 0, "ambiguous": 0, "training_overlap": 0,
+             "cross_split_overlap": 0,
              "no_eligible_labels": 0, "unsupported_labels": {}}
     unsupported = Counter()
     seen_ids, seen_text = set(), set()
+    normalized_records = []
+    text_splits = defaultdict(set)
+    training_texts = set()
     examples = []
     for record in source:
         if not isinstance(record, dict):
@@ -153,15 +159,23 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None):
         audit["records_total"] += 1
         unsupported.update(label for label in gold if label not in eligible)
         normalized = text.casefold()
+        text_splits[normalized].add(record_split)
+        if identifier in training:
+            training_texts.add(normalized)
+        normalized_records.append((identifier, text, gold, record_split,
+                                   ambiguous, normalized))
+    for identifier, text, gold, record_split, ambiguous, normalized in normalized_records:
         duplicate = normalized in seen_text
         seen_text.add(normalized)
         # Exclusion counters are mutually exclusive, in this priority order.
-        if duplicate:
+        if len(text_splits[normalized]) > 1:
+            audit["cross_split_overlap"] += 1
+        elif normalized in training_texts:
+            audit["training_overlap"] += 1
+        elif duplicate:
             audit["duplicate_text"] += 1
         elif ambiguous:
             audit["ambiguous"] += 1
-        elif identifier in training:
-            audit["training_overlap"] += 1
         elif record_split != split:
             audit["wrong_split"] += 1
         elif not eligible.intersection(gold):
@@ -280,6 +294,12 @@ def metrics(records, graph):
         "exact_match_accuracy": correct / count if count else None,
         "macro_f1": (sum(2 * tp[label] / (2 * tp[label] + fp[label] + fn[label])
                          for label in classes) / len(classes) if classes else None),
+        "macro_f1_convention": (
+            "Acceptable-target top-1 resolution, not standard multilabel macro-F1: "
+            "a correct top-1 becomes the singleton target; an incorrect or absent "
+            "top-1 uses the numerically smallest gold CWE. Average F1 over the "
+            "union of resolved targets and emitted top-1 labels; abstentions "
+            "emit no prediction."),
         "top_k_recall": {k: hits[k] / count if count else None for k in _TOP_K},
         "mean_hierarchical_distance": (sum(distances) / len(distances)
                                        if distances else None),
