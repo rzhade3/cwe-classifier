@@ -7,3 +7,13 @@ requires-python = ">=3.13"
 dependencies = [
     "chromadb>=1.0.13",
 ]
+
+[project.optional-dependencies]
+notebook = [
+    "jupyterlab==4.6.4",
+    "nbclient==0.11.0",
+    "nbformat==5.11.1",
+]
+jev = [
+    "typesafe-sdk==0.7.4",
+]

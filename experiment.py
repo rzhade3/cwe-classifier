@@ -1,14 +1,11 @@
-"""Offline, reproducible comparison of CWE classification strategies."""
+"""Artifact helpers and a compatibility CLI for experiments.ipynb."""
 
 import argparse
 import hashlib
 import json
 import math
-from dataclasses import asdict
 from pathlib import Path
-
-from benchmark import load_benchmark, metrics, paired_intervals
-from classification import CWEGraph, ChromaBaseline, classify, load_scorer, normalize_label
+from classification import normalize_label
 
 
 def fingerprint(value):
@@ -91,6 +88,18 @@ def load_one_shot(path, examples, graph):
     return results
 
 
+def run_notebook(config):
+    """Execute the trusted, checked-in notebook workflow without Jupyter."""
+    notebook_path = Path(__file__).with_name("experiments.ipynb")
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    namespace = {"experiment_config": config, "__name__": "__notebook__"}
+    for index, cell in enumerate(notebook["cells"]):
+        if cell["cell_type"] == "code":
+            source = "".join(cell["source"])
+            exec(compile(source, f"{notebook_path}:cell-{index}", "exec"), namespace)
+    return namespace
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["prepare", "export-prompts", "run"])
@@ -117,77 +126,9 @@ def main():
             args.margin < 0 or not math.isfinite(args.margin) or
             not math.isfinite(args.threshold)):
         parser.error("Invalid traversal or bootstrap parameters")
-    graph = CWEGraph(args.catalog, args.view)
-    training_ids = None
-    if args.training_ids:
-        with open(args.training_ids, encoding="utf-8") as stream:
-            training_ids = json.load(stream)
-        if not isinstance(training_ids, list) or not all(isinstance(x, str) for x in training_ids):
-            parser.error("--training-ids must contain a JSON array of strings")
-    examples, audit = load_benchmark(
-        args.benchmark, list(graph.labels), split=args.split, training_ids=training_ids
-    )
-    # Evaluation utilities normalize gold labels with the CWE- prefix, while
-    # graph/scorer interfaces use the numeric CSV identifier.
-    for example in examples:
-        example["labels"] = [normalize_label(label) for label in example["labels"]]
-    if not examples:
-        parser.error("No eligible evaluation examples remain")
-    if args.command == "prepare":
-        write_jsonl(args.output, examples)
-        print(json.dumps(audit, indent=2))
-        return
-    if args.command == "export-prompts":
-        export_prompts(examples, graph, args.output, args.max_prompt_chars)
-        return
-    if "one-shot" in args.methods and not args.one_shot_predictions:
+    if args.command == "run" and "one-shot" in args.methods and not args.one_shot_predictions:
         parser.error("--one-shot-predictions is required; export prompts and obtain real outputs first")
-    results = {}
-    # Validate external predictions before invoking potentially expensive backends.
-    if "one-shot" in args.methods:
-        results["one-shot"] = load_one_shot(args.one_shot_predictions, examples, graph)
-    scorer = load_scorer(args.scorer, graph.labels) if set(args.methods) & {
-        "flat", "greedy", "beam"
-    } else None
-    chroma = ChromaBaseline(graph.labels) if "chroma" in args.methods else None
-    for method in dict.fromkeys(args.methods):
-        if method == "one-shot":
-            continue
-        records = []
-        for example in examples:
-            if method == "chroma":
-                prediction = chroma.predict(example["text"], args.top_k)
-            else:
-                width = {"flat": None, "greedy": 1, "beam": args.beam_width}[method]
-                prediction = classify(example["text"], graph, scorer, width,
-                                      args.top_k, args.threshold, args.margin)
-            records.append({**example, **asdict(prediction)})
-        results[method] = records
-    output = Path(args.output)
-    output.mkdir(parents=True, exist_ok=True)
-    for method, records in results.items():
-        write_jsonl(output / f"{method}.jsonl", records)
-    summary = {
-        "configuration": vars(args), "catalog_hash": catalog_fingerprint(graph),
-        "benchmark_hash": fingerprint(examples), "audit": audit,
-        "training_overlap": "known IDs excluded" if training_ids is not None else "unknown",
-        "metrics": {method: metrics(records, graph)
-                    for method, records in results.items()},
-        "paired_accuracy_intervals": (
-            paired_intervals(results, args.seed, args.bootstrap_samples)
-            if len(results) > 1 else {}
-        ),
-        "notes": [
-            "Lexical scorer is an offline reference, not a learned classifier.",
-            "Scores must be comparable across candidate sets; margin is tuned on dev only.",
-            "One-shot is top-1 only; retrieval and classifier top-k are not directly comparable.",
-            "Scorer token/cost telemetry is unknown unless the adapter supplies last_usage.",
-            "Chroma setup/indexing time is excluded from per-example latency.",
-        ],
-    }
-    with open(output / "summary.json", "w", encoding="utf-8") as stream:
-        json.dump(summary, stream, indent=2, sort_keys=True)
-    print(json.dumps(summary["metrics"], indent=2))
+    run_notebook({**vars(args), "demo": False})
 
 
 if __name__ == "__main__":

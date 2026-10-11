@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from classification import CWEGraph
-from experiment import catalog_fingerprint, export_prompts, fingerprint, load_one_shot
+from experiment import catalog_fingerprint, export_prompts, fingerprint, load_one_shot, run_notebook
 import test_classification
 
 
@@ -77,6 +77,57 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(len(summary["paired_accuracy_intervals"]), 6)
         self.assertEqual(summary["metrics"]["one-shot"]["mean_hierarchical_distance"], 0)
         self.assertIsNone(summary["metrics"]["flat"]["total_cost"])
+
+    def configuration(self, command="run"):
+        benchmark = Path(self.directory.name) / "benchmark.jsonl"
+        benchmark.write_text(json.dumps(self.examples[0]) + "\n", encoding="utf-8")
+        return {
+            "command": command, "demo": False, "catalog": str(self.graph_path),
+            "benchmark": str(benchmark), "output": str(Path(self.directory.name) / "results"),
+            "view": "1000", "split": "test", "training_ids": None,
+            "scorer": "lexical", "methods": ["flat", "greedy", "beam"],
+            "one_shot_predictions": None, "beam_width": 2, "top_k": 2,
+            "threshold": 0.0, "margin": 0.0, "seed": 0,
+            "bootstrap_samples": 20, "max_prompt_chars": None,
+        }
+
+    def test_notebook_exports_and_run(self):
+        for command in ["prepare", "export-prompts"]:
+            config = self.configuration(command)
+            config["output"] = str(Path(self.directory.name) / f"{command}.jsonl")
+            state = run_notebook(config)
+            self.assertIsNone(state["summary"])
+            record = json.loads(Path(config["output"]).read_text())
+            self.assertEqual(record["id"], "a")
+        state = run_notebook(self.configuration())
+        self.assertEqual(set(state["results"]), {"flat", "greedy", "beam"})
+        self.assertFalse(state["summary"]["synthetic_demo"])
+        self.assertIn("lock_hash", state["summary"]["environment"])
+
+    def test_notebook_rejects_invalid_configuration(self):
+        for change in [{"methods": ["made-up"]}, {"beam_width": 0},
+                       {"demo": True, "scorer": "jev_scorer:create_scorer"},
+                       {"methods": ["one-shot"]}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                run_notebook({**self.configuration(), **change})
+
+    def test_jupyter_executes_same_workflow(self):
+        try:
+            import nbformat
+            from nbclient import NotebookClient
+        except ImportError:
+            self.skipTest("Install notebook extra for headless Jupyter validation")
+        path = Path(__file__).with_name("experiments.ipynb")
+        notebook = nbformat.read(path, as_version=4)
+        nbformat.validate(notebook)
+        config = self.configuration()
+        notebook.cells.insert(0, nbformat.v4.new_code_cell(
+            "experiment_config = " + repr(config)
+        ))
+        NotebookClient(notebook, timeout=120, kernel_name="python3",
+                       resources={"metadata": {"path": str(path.parent)}}).execute()
+        summary = json.loads((Path(config["output"]) / "summary.json").read_text())
+        self.assertEqual(set(summary["metrics"]), {"flat", "greedy", "beam"})
 
 
 if __name__ == "__main__":
