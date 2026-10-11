@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from classification import CWEGraph
 from experiment import catalog_fingerprint, export_prompts, fingerprint, load_one_shot, run_notebook
@@ -110,6 +111,17 @@ class ExperimentTests(unittest.TestCase):
                        {"methods": ["one-shot"]}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 run_notebook({**self.configuration(), **change})
+
+    def test_cli_workflow_uses_its_own_checkout_root(self):
+        source = Path(__file__).parent
+        relocated = Path(self.directory.name) / "relocated"
+        relocated.mkdir()
+        for name in ["experiments.ipynb", "uv.lock"]:
+            (relocated / name).write_bytes((source / name).read_bytes())
+        with patch("experiment.__file__", str(relocated / "experiment.py")):
+            state = run_notebook(self.configuration())
+        self.assertEqual(state["ROOT"], relocated)
+        self.assertIsNotNone(state["summary"]["workflow_hash"])
 
     def test_jupyter_executes_same_workflow(self):
         try:

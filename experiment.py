@@ -92,7 +92,10 @@ def run_notebook(config):
     """Execute the trusted, checked-in notebook workflow without Jupyter."""
     notebook_path = Path(__file__).with_name("experiments.ipynb")
     notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    namespace = {"experiment_config": config, "__name__": "__notebook__"}
+    namespace = {
+        "experiment_config": config, "__name__": "__notebook__",
+        "experiment_root": str(notebook_path.parent),
+    }
     for index, cell in enumerate(notebook["cells"]):
         if cell["cell_type"] == "code":
             source = "".join(cell["source"])
