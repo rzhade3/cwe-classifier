@@ -133,7 +133,7 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None, *,
         raise ValueError("eligible_labels must not be empty")
     if training_ids is not None and not isinstance(training_ids, list):
         raise ValueError("training_ids must be a list")
-    training = {_identifier(value) for value in (training_ids or [])}
+    training = {_identifier(value).casefold() for value in (training_ids or [])}
     try:
         content = Path(path).read_text(encoding="utf-8")
     except (TypeError, UnicodeError) as error:
@@ -172,10 +172,24 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None, *,
     training_texts = set()
     catalog_texts = set()
     examples = []
+    metadata = {}
     for record in source:
         if not isinstance(record, dict):
             raise ValueError("Each benchmark record must be an object")
         identifier = _identifier(record.get("id"))
+        fields = {}
+        for key in ("aliases", "sources", "ecosystems", "vendors", "slices"):
+            if key in record:
+                value = record[key]
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                    raise ValueError(f"{key} must be a list of strings")
+                fields[key] = value
+        for key in ("kev", "expert_reviewed", "insufficient_information"):
+            if key in record:
+                if not isinstance(record[key], bool):
+                    raise ValueError(f"{key} must be a bool")
+                fields[key] = record[key]
+        metadata[identifier] = fields
         if identifier in seen_ids:
             raise ValueError("Duplicate benchmark id: {}".format(identifier))
         seen_ids.add(identifier)
@@ -196,9 +210,12 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None, *,
         unsupported.update(label for label in gold if label not in eligible)
         normalized = text.casefold()
         text_splits[normalized].add(record_split)
-        if identifier in training:
+        identities = {identifier.casefold()} | {
+            _identifier(alias).casefold() for alias in metadata[identifier].get("aliases", [])
+        }
+        if identities.intersection(training):
             training_texts.add(normalized)
-        if exclude_observed_examples and identifier.casefold() in observed_ids:
+        if exclude_observed_examples and identities.intersection(observed_ids):
             catalog_texts.add(normalized)
         normalized_records.append((identifier, text, gold, record_split,
                                    ambiguous, normalized))
@@ -222,7 +239,7 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None, *,
             audit["no_eligible_labels"] += 1
         else:
             examples.append({"id": identifier, "text": text,
-                             "labels": gold, "split": record_split})
+                             "labels": gold, "split": record_split, **metadata[identifier]})
     audit["accepted"] = len(examples)
     audit["unsupported_labels"] = dict(sorted(unsupported.items()))
     return examples, audit

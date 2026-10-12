@@ -105,9 +105,28 @@ def run_notebook(config):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare", "export-prompts", "run"])
+    parser.add_argument("command", choices=["prepare", "export-prompts", "run", "build-benchmark"])
     parser.add_argument("--catalog", required=True)
-    parser.add_argument("--benchmark", required=True)
+    parser.add_argument("--benchmark", help="JSONL benchmark or NVD snapshot")
+    parser.add_argument("--dataset-manifest", help="Pinned multi-source local snapshot manifest")
+    parser.add_argument("--dataset-output", default="/tmp/cwe-dataset",
+                        help="Directory for grouped benchmark and provenance")
+    parser.add_argument("--test-after", help="Temporal test holdout cutoff YYYY-MM-DD")
+    parser.add_argument("--holdout-ecosystems", nargs="*", default=[])
+    parser.add_argument("--holdout-vendors", nargs="*", default=[])
+    parser.add_argument("--holdout-sources", nargs="*", default=[])
+    parser.add_argument("--sample-size", type=int, default=200, help="Natural sample size per split")
+    parser.add_argument("--max-examples-per-split", type=int, default=300,
+                        help="Total prepared natural plus diagnostic evaluation cap per split")
+    parser.add_argument("--max-eval-examples", type=int, default=300)
+    parser.add_argument("--max-live-examples", type=int, default=50,
+                        help="Pilot cap for non-lexical custom classifier comparisons")
+    parser.add_argument("--max-candidate-evaluations", type=int, default=1000000,
+                        help="Preflight upper bound across flat/greedy/beam scorer work")
+    parser.add_argument("--balanced-per-label", type=int, default=20)
+    parser.add_argument("--rare-max-count", type=int, default=10)
+    parser.add_argument("--near-duplicate-threshold", type=float, default=0.9)
+    parser.add_argument("--review-sample-size", type=int, default=30)
     parser.add_argument("--output", required=True)
     parser.add_argument("--view", default="1000")
     parser.add_argument("--split", choices=["dev", "test"], default="test")
@@ -131,6 +150,10 @@ def main():
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--max-prompt-chars", type=int)
     args = parser.parse_args()
+    if not args.benchmark and not args.dataset_manifest:
+        parser.error("Supply --benchmark or --dataset-manifest")
+    if args.command == "build-benchmark" and not args.dataset_manifest:
+        parser.error("build-benchmark requires --dataset-manifest")
     if (args.beam_width < 1 or args.top_k < 1 or args.bootstrap_samples < 1 or
             args.margin < 0 or not math.isfinite(args.margin) or
             not math.isfinite(args.threshold) or not 0 <= args.dev_fraction < 1):

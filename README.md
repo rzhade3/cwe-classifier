@@ -161,6 +161,93 @@ Catalog CVE references in `Observed Examples` are excluded by default;
 `--include-observed-examples` opts out. `--training-ids` still excludes known
 training IDs. These checks cannot establish absence of model training contamination.
 
+### Multi-source benchmark preparation
+
+The notebook also builds a grouped benchmark from **pinned local snapshots**:
+NVD JSON, [CVE List V5](https://github.com/CVEProject/cvelistV5) JSON files,
+[GitHub-reviewed advisories](https://github.com/github/advisory-database), vendor
+JSONL, completed expert-adjudicated JSONL, and [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+membership. Download source dumps/archives once, extract them locally, and record
+the source revision/date and checksum. The importer performs no live requests or
+archive extraction. KEV annotates existing groups; it is not an independent
+benchmark or proof that a CWE annotation is correct.
+
+Supply a JSON manifest with `sources`, each containing `kind` (`nvd`, `cve`,
+`ghsa`, `vendor`, `adjudicated`, or `kev`), `path`, `revision`, and `sha256`.
+Paths may be absolute or relative to the manifest. For a file, the checksum is
+its SHA-256; for a directory of JSON records, use
+`dataset_sources.snapshot_sha256` to compute the documented deterministic digest.
+Checksum mismatches fail before evaluation. GitHub records must be reviewed and
+not withdrawn; CVE records must be published. The report records the manifest
+hash, source revisions/checksums, input counts, and exclusions.
+
+```bash
+uv run python "$REPO/experiment.py" build-benchmark \
+  --catalog "$REPO/data/all.csv" \
+  --dataset-manifest /tmp/cwe-snapshots.json --output /tmp/cwe-dataset \
+  --seed 0 --dev-fraction 0.2 --sample-size 200 --max-examples-per-split 300
+```
+
+In the notebook, set `demo=False` and `dataset_manifest` to the same manifest.
+`command='build-benchmark'` writes both splits to `output` without invoking models.
+For `run`, `dataset_output` receives preparation artifacts while `output` receives
+predictions. Preparation writes `benchmark.jsonl`, `diagnostics.jsonl`,
+`review_queue.jsonl`, a blinded `expert_review_sample.jsonl` (default at most 30
+selected natural groups, adjustable with `--review-sample-size`), and
+`dataset-report.json`. Reuse the pinned manifest/options
+for dev and test. Do not confuse a synthetic fixture with a sourced benchmark:
+no real corpus or completed human review is bundled.
+
+Aliases (CVE/GHSA/vendor IDs) and conservative near-duplicate descriptions are
+grouped **before splitting or sampling**. Each group contributes one deterministic
+description, not one example per source. Catalog/training overlap is checked
+across every alias. Conflicting source labels are quarantined rather than silently
+unioned; completed expert labels can resolve conflicts. Token-based near-duplicate
+matching is heuristic, not guaranteed semantic deduplication; inspect the audit
+and review queue. Explicit CWE identifiers are removed from input text.
+
+For generalization, use `--test-after YYYY-MM-DD`, `--holdout-ecosystems`,
+`--holdout-vendors`, or `--holdout-sources`; their union assigns held-out groups to
+test and the remainder to dev. Missing dates are quarantined for time holdouts.
+Publication dates are grouped conservatively; source/domain metadata can be
+incomplete. Do not infer unseen vendor coverage from an empty vendor field.
+Without holdouts, seeded identity hashing assigns dev/test.
+
+`--sample-size` defaults to **200** uniform natural-distribution groups per split.
+`--max-examples-per-split` defaults to **300**, bounding the union of natural and
+scored diagnostic groups; diagnostic selection uses only the remaining budget.
+A separate `--balanced-per-label` subset diagnoses rare classes;
+it does not replace or reweight the headline sample. The notebook reports natural
+accuracy/paired intervals separately from balanced, KEV, rare, and expert slices.
+Rarity uses dev-label counts (`--rare-max-count`), not test performance.
+Ambiguous/no-gold/insufficient-information cases remain counted and exported for
+review, not treated as incorrect CWE predictions or invented gold labels.
+
+Evaluation is bounded again by `--max-eval-examples` (default 300) for all inputs.
+Non-lexical classifier comparisons also start with `--max-live-examples 50`,
+an initial cost-checking pilot, not a precise population estimate. Selection is
+seeded and prioritizes the uniform natural sample; population/selected label
+counts are recorded so lost coverage is visible. Raise the limit deliberately
+after measuring usage and uncertainty; use the same sampling settings for
+one-shot exports and all compared methods. A full-catalog work upper bound is
+checked against `--max-candidate-evaluations` (default 1,000,000) **before** creating
+models. This caps work, not dollars: unknown token lengths/pricing cannot promise
+a monetary budget. Report confidence intervals and slice counts; small or absent
+rare-class samples do not support strong class-specific conclusions.
+
+Vendor/adjudication JSONL uses `id`, `aliases`, `text`, `labels`, `published`,
+`ecosystems`, and `vendors`, with optional `ambiguous` and
+`insufficient_information` flags. Human gold additionally requires
+`expert_reviewed=true` and `adjudication_status='complete'`. Review queue entries
+are unresolved work, **not** completed adjudications. Reviewers should independently
+assess the description, record acceptable labels/status and evidence, and supply
+their completed records as a pinned `adjudicated` source. Do not use a test review
+to tune model settings.
+
+SARD/Juliet is a future **code-to-CWE** benchmark, not an input to this
+description-to-CWE evaluation. CWE catalog text and Observed Examples remain
+contaminated smoke diagnostics only.
+
 ### Traversal options
 
 The graph uses one `ChildOf` view (default `1000`), preserves multiple parents,
