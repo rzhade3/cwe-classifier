@@ -114,12 +114,15 @@ def load_scorer(spec, catalog):
     return getattr(importlib.import_module(module), factory)(catalog)
 
 
-def classify(text, graph, scorer, beam_width=None, top_k=5, threshold=0.0, margin=0.0):
+def classify(text, graph, scorer, beam_width=None, top_k=5, threshold=0.0, margin=0.0,
+             stop_policy="specificity"):
     """Scores must be comparable across candidate sets and higher is better."""
     if top_k < 1 or (beam_width is not None and beam_width < 1):
         raise ValueError("top_k and beam_width must be positive")
     if not math.isfinite(threshold) or not math.isfinite(margin) or margin < 0:
         raise ValueError("threshold must be finite and margin nonnegative")
+    if stop_policy not in {"specificity", "improvement", "leaf"}:
+        raise ValueError("Unknown traversal stopping policy")
     result = Prediction()
     start = perf_counter()
     cache = {}
@@ -160,13 +163,18 @@ def classify(text, graph, scorer, beam_width=None, top_k=5, threshold=0.0, margi
             candidates = []
             score({child for label, _ in active for child in graph.children[label]})
             for label, path in active:
+                can_stop = stop_policy == "improvement" or (
+                    stop_policy == "specificity" and
+                    graph.labels[label].get("Weakness Abstraction") in {"Base", "Variant"}
+                )
                 children = [
                     child for child in graph.children[label]
-                    if cache[child] >= threshold and cache[child] > cache[label] + margin
+                    if cache[child] >= threshold and
+                    (not can_stop or cache[child] > cache[label] + margin)
                 ]
                 if children:
                     candidates.extend((child, path + [child]) for child in children)
-                else:
+                elif can_stop or not graph.children[label]:
                     finished.append((label, path))
             candidates.sort(key=lambda item: (-cache[item[0]], item[0], item[1]))
             active = []

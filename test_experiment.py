@@ -1,3 +1,4 @@
+import csv
 import json
 import subprocess
 import sys
@@ -104,11 +105,41 @@ class ExperimentTests(unittest.TestCase):
         self.assertEqual(set(state["results"]), {"flat", "greedy", "beam"})
         self.assertFalse(state["summary"]["synthetic_demo"])
         self.assertIn("lock_hash", state["summary"]["environment"])
+        self.assertEqual(state["summary"]["headline_metric"], "exact_match_accuracy")
+        self.assertIn("prediction_count_histogram", state["summary"]["metrics"]["greedy"])
+        self.assertNotIn("macro_f1", state["summary"]["metrics"]["flat"])
+        self.assertIn("top1_abstraction_histogram",
+                      state["summary"]["traversal_diagnostics"]["greedy"])
+
+    def test_cli_catalog_exclusion_and_opt_out(self):
+        catalog_text = self.graph_path.read_text()
+        rows = list(csv.DictReader(catalog_text.splitlines()))
+        rows[0]["Observed Examples"] = "::REFERENCE:CVE-2026-1234:DESCRIPTION:Example:LINK:x::"
+        with self.graph_path.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=[*rows[0]])
+            writer.writeheader()
+            writer.writerows(rows)
+        config = self.configuration("prepare")
+        Path(config["benchmark"]).write_text(json.dumps({
+            **self.examples[0], "id": "CVE-2026-1234"
+        }) + "\n")
+        command = [
+            sys.executable, str(Path(__file__).with_name("experiment.py")), "prepare",
+            "--catalog", str(self.graph_path), "--benchmark", config["benchmark"],
+            "--output", str(self.path), "--dev-fraction", "0",
+        ]
+        blocked = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(blocked.returncode, 0)
+        included = subprocess.run([*command, "--include-observed-examples"],
+                                  capture_output=True, text=True)
+        self.assertEqual(included.returncode, 0, included.stderr)
+        self.assertEqual(json.loads(self.path.read_text())["id"], "CVE-2026-1234")
 
     def test_notebook_rejects_invalid_configuration(self):
         for change in [{"methods": ["made-up"]}, {"beam_width": 0},
                        {"demo": True, "scorer": "jev_scorer:create_scorer"},
-                       {"methods": ["one-shot"]}]:
+                       {"methods": ["one-shot"]}, {"dev_fraction": 1},
+                       {"stop_policy": "unknown"}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 run_notebook({**self.configuration(), **change})
 

@@ -32,12 +32,14 @@ class ClassificationTests(unittest.TestCase):
     def write_catalog(self):
         with open(self.path, "w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=[
-                "CWE-ID", "Name", "Description", "Status", "Related Weaknesses"
+                "CWE-ID", "Name", "Description", "Status", "Related Weaknesses",
+                "Weakness Abstraction"
             ])
             writer.writeheader()
             for label, relationships in self.rows:
                 writer.writerow({"CWE-ID": label, "Name": label, "Description": label,
-                                 "Status": "Stable", "Related Weaknesses": relationships})
+                                 "Status": "Stable", "Related Weaknesses": relationships,
+                                 "Weakness Abstraction": "Base" if label in {"2", "3", "4", "5"} else "Pillar"})
 
     def test_view_multiple_parents_and_distance(self):
         graph = CWEGraph(self.path)
@@ -61,9 +63,20 @@ class ClassificationTests(unittest.TestCase):
     def test_stop_and_abstain(self):
         graph = CWEGraph(self.path)
         scores = Scorer({"1": .8, "2": .7, "3": .6, "4": .9, "5": .2})
-        self.assertEqual(classify("", graph, scores, 1).predictions, ["1"])
+        self.assertEqual(classify("", graph, scores, 1, stop_policy="improvement").predictions, ["1"])
+        self.assertEqual(classify("", graph, scores, 1).predictions, ["4"])
         self.assertTrue(classify("", graph, scores, threshold=1).abstained)
-        self.assertEqual(classify("", graph, scores, 1, margin=.3).predictions, ["1"])
+        self.assertEqual(classify("", graph, scores, 1, margin=.3).predictions, ["2"])
+
+    def test_leaf_policy_and_threshold_failure(self):
+        graph = CWEGraph(self.path)
+        scores = Scorer({"1": .9, "2": .8, "3": .7, "4": .6, "5": .1})
+        self.assertEqual(classify("", graph, scores, 1).predictions, ["2"])
+        self.assertEqual(classify("", graph, scores, 1, stop_policy="leaf").predictions, ["4"])
+        self.assertTrue(classify("", graph, scores, 1, threshold=.85).abstained)
+        self.assertTrue(classify("", graph, scores, 1, threshold=.75, stop_policy="leaf").abstained)
+        with self.assertRaises(ValueError):
+            classify("", graph, scores, 1, stop_policy="unknown")
 
     def test_invalid_scores_and_parameters(self):
         graph = CWEGraph(self.path)

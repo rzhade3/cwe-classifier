@@ -77,6 +77,54 @@ class LoaderTests(unittest.TestCase):
                 self.assertEqual(examples, [])
                 self.assertEqual(audit["training_overlap"], 2)
 
+    def test_catalog_text_overlap_is_order_independent(self):
+        catalog = {79: {"Observed Examples":
+                       "::REFERENCE:CVE-2025-1:DESCRIPTION:Known example:"
+                       "LINK:https://example.org::"}}
+        records = [
+            example("unlisted", "Unsafe CWE-79 user input"),
+            example("cve-2025-1", "unsafe USER input"),
+            example("safe", "Different issue")]
+        for ordered in (records, records[::-1]):
+            with self.subTest(order=ordered):
+                examples, audit = self.load(ordered, catalog=catalog)
+                self.assertEqual([record["id"] for record in examples], ["safe"])
+                self.assertEqual(audit["catalog_overlap"], 2)
+                self.assertEqual(audit["training_overlap"], 0)
+                self.assertEqual(audit["duplicate_text"], 0)
+                self.assertTrue(audit["catalog_overlap_exclusion_enabled"])
+
+    def test_catalog_colon_references_case_and_optout(self):
+        catalog = {79: {"Observed Examples":
+                       "::REFERENCE:CVE-2025-1:extra:DESCRIPTION:First:"
+                       "LINK:https://example.org::REFERENCE:cve-2025-2:"
+                       "DESCRIPTION:Second:LINK:https://example.org::"}}
+        records = [example("cve-2025-1:EXTRA", "First issue"),
+                   example("CVE-2025-2", "Second issue")]
+        examples, audit = self.load(records, catalog=catalog)
+        self.assertEqual(examples, [])
+        self.assertEqual(audit["catalog_overlap"], 2)
+        examples, audit = self.load(
+            records, catalog=catalog, exclude_observed_examples=False)
+        self.assertEqual(len(examples), 2)
+        self.assertEqual(audit["catalog_overlap"], 0)
+        self.assertFalse(audit["catalog_overlap_exclusion_enabled"])
+
+    def test_overlap_exclusion_priority(self):
+        catalog = {79: {"Observed Examples":
+                       "::REFERENCE:CVE-2025-1:DESCRIPTION:Known::"
+                       "REFERENCE:CVE-2025-2:DESCRIPTION:Known::"}}
+        examples, audit = self.load([
+            example("CVE-2025-1", "Cross split"),
+            example("dev", "Cross split", split="dev"),
+            example("CVE-2025-2", "Catalog and training"),
+            example("train", "Training only")],
+            catalog=catalog, training_ids=["CVE-2025-1", "CVE-2025-2", "train"])
+        self.assertEqual(examples, [])
+        self.assertEqual(audit["cross_split_overlap"], 2)
+        self.assertEqual(audit["catalog_overlap"], 1)
+        self.assertEqual(audit["training_overlap"], 1)
+
     def test_same_split_first_wins(self):
         examples, audit = self.load([
             example("first"), example("second", "unsafe USER input")])
@@ -99,7 +147,8 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(audit["unsupported_labels"], {"CWE-89": 3})
         self.assertEqual(sum(audit[key] for key in (
             "accepted", "duplicate_text", "wrong_split", "ambiguous",
-            "training_overlap", "cross_split_overlap", "no_eligible_labels")),
+            "training_overlap", "catalog_overlap", "cross_split_overlap",
+            "no_eligible_labels")),
             audit["records_total"])
 
     def test_ambiguous_text_still_prevents_leakage(self):
@@ -160,11 +209,70 @@ class LoaderTests(unittest.TestCase):
                     {"lang": "en", "value": "NVD-CWE-noinfo"}]}]}}
         ]}
         with patch.object(Path, "read_text", return_value=json.dumps(document)):
-            examples, audit = load_benchmark("nvd.json", ["79"])
+            examples, audit = load_benchmark("nvd.json", ["79"], dev_fraction=0)
         self.assertEqual(examples[0]["text"], "A weakness")
         self.assertEqual(examples[0]["labels"], ["CWE-79", "CWE-89"])
         self.assertEqual(examples[0]["split"], "test")
         self.assertEqual(audit["no_eligible_labels"], 1)
+
+    def test_nvd_split_is_stable_seeded_and_order_independent(self):
+        vulnerabilities = [
+            {"cve": {"id": "CVE-2025-{}".format(index),
+                     "descriptions": [{"lang": "en",
+                                       "value": "Issue {}".format(index)}],
+                     "weaknesses": [{"description": [
+                         {"lang": "en", "value": "CWE-79"}]}]}}
+            for index in range(100)]
+
+        def assignments(items, seed=0):
+            assigned = {}
+            with patch.object(Path, "read_text", return_value=json.dumps(
+                    {"vulnerabilities": items})):
+                for split in ("test", "dev"):
+                    records, audit = load_benchmark(
+                        "nvd.json", ["79"], split=split, seed=seed)
+                    self.assertTrue(records)
+                    assigned.update({r["id"].casefold(): r["split"] for r in records})
+                    self.assertEqual(audit["split_assignment"],
+                                     {"method": "seeded_id_sha256",
+                                      "seed": seed, "dev_fraction": 0.2})
+            self.assertEqual(len(assigned), len(items))
+            return assigned
+
+        first = assignments(vulnerabilities)
+        self.assertEqual(first, assignments(vulnerabilities[::-1]))
+        self.assertEqual(first, assignments(vulnerabilities))
+        self.assertNotEqual(first, assignments(vulnerabilities, seed=17))
+        lower_case = json.loads(json.dumps(vulnerabilities))
+        for item in lower_case:
+            item["cve"]["id"] = "  " + item["cve"]["id"].lower() + "  "
+        self.assertEqual(first, assignments(lower_case))
+
+    def test_dev_fraction_and_seed_validation(self):
+        for fraction in (-0.1, 1, 1.1, float("nan"), float("inf"),
+                         "0.2", None, True):
+            with self.subTest(fraction=fraction), self.assertRaisesRegex(
+                    ValueError, "dev_fraction"):
+                self.load([example()], dev_fraction=fraction)
+        for seed in (True, 0.2, "0", None):
+            with self.subTest(seed=seed), self.assertRaisesRegex(ValueError, "seed"):
+                self.load([example()], seed=seed)
+
+    def test_jsonl_explicit_split_unchanged(self):
+        records = [example("dev", "Dev example", split="dev"),
+                   example("test", "Test example")]
+        for fraction in (0, 0.99):
+            examples, audit = self.load(
+                records, split="dev", dev_fraction=fraction, seed=123)
+            self.assertEqual([r["id"] for r in examples], ["dev"])
+            self.assertEqual(audit["split_assignment"], {"method": "explicit"})
+
+    def test_catalog_argument_validation(self):
+        for kwargs in (dict(catalog=[]), dict(catalog={79: None}),
+                       dict(catalog={79: {"Observed Examples": None}}),
+                       dict(exclude_observed_examples=1)):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                self.load([example()], **kwargs)
 
     def test_invalid_nvd(self):
         for cve in ({}, {"descriptions": "bad"}, {
@@ -177,17 +285,16 @@ class LoaderTests(unittest.TestCase):
 
 
 class MetricsTests(unittest.TestCase):
-    def test_accuracy_macro_topk_and_resources(self):
+    def test_accuracy_topk_and_resources(self):
         records = [
             result("a", labels=["79", "80"], predictions=["80"]),
             result("b", predictions=["89", "79"]),
             result("c", abstained=True, predictions=["79"])]
         scores = metrics(records, Graph())
         self.assertAlmostEqual(scores["exact_match_accuracy"], 1 / 3)
-        self.assertAlmostEqual(scores["macro_f1"], 1 / 3)
-        self.assertIsInstance(scores["macro_f1_convention"], str)
-        self.assertIn("not standard multilabel macro-F1", scores["macro_f1_convention"])
-        self.assertIn("numerically smallest gold CWE", scores["macro_f1_convention"])
+        self.assertFalse(any(key.startswith("macro_f1") for key in scores))
+        self.assertEqual(scores["prediction_count_histogram"], {1: 2, 2: 1})
+        self.assertEqual(scores["mean_prediction_count"], 4 / 3)
         self.assertEqual(scores["top_k_recall"][1], 1 / 3)
         self.assertEqual(scores["top_k_recall"][3], 2 / 3)
         self.assertEqual(scores["mean_hierarchical_distance"], 1)
@@ -200,9 +307,10 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(scores["total_output_tokens"], 9)
         self.assertAlmostEqual(scores["total_cost"], 0.03)
 
-    def test_alternatives_correct_macro_is_one(self):
+    def test_alternatives_correct_accuracy_is_one(self):
         self.assertEqual(metrics([result(labels=["79", "80"],
-                                         predictions=["80"])], Graph())["macro_f1"], 1)
+                                         predictions=["80"])],
+                                 Graph())["exact_match_accuracy"], 1)
 
     def test_distance_minimum_unreachable_and_empty_prediction(self):
         scores = metrics([
@@ -212,6 +320,8 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(scores["mean_hierarchical_distance"], 1)
         self.assertEqual(scores["unreachable_count"], 1)
         self.assertEqual(scores["hierarchical_distance_count"], 1)
+        self.assertEqual(scores["prediction_count_histogram"], {0: 1, 1: 2})
+        self.assertEqual(scores["mean_prediction_count"], 2 / 3)
 
     def test_unknown_usage_is_not_zero(self):
         scores = metrics([
@@ -226,9 +336,12 @@ class MetricsTests(unittest.TestCase):
 
     def test_empty_dataset(self):
         scores = metrics([], Graph())
-        for field in ("exact_match_accuracy", "macro_f1", "abstention_rate",
-                      "mean_hierarchical_distance", "mean_latency_seconds"):
+        for field in ("exact_match_accuracy", "abstention_rate",
+                      "mean_hierarchical_distance", "mean_latency_seconds",
+                      "mean_prediction_count"):
             self.assertIsNone(scores[field])
+        self.assertFalse(any(key.startswith("macro_f1") for key in scores))
+        self.assertEqual(scores["prediction_count_histogram"], {})
         self.assertEqual(scores["total_calls"], 0)
         self.assertTrue(all(value is None for value in scores["top_k_recall"].values()))
 

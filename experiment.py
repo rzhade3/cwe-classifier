@@ -121,13 +121,19 @@ def main():
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--threshold", type=float, default=0.0)
     parser.add_argument("--margin", type=float, default=0.0)
+    parser.add_argument("--stop-policy", choices=["specificity", "improvement", "leaf"],
+                        default="specificity")
+    parser.add_argument("--dev-fraction", type=float, default=0.2,
+                        help="Stable seeded dev split fraction for NVD imports")
+    parser.add_argument("--include-observed-examples", action="store_true",
+                        help="Opt out of excluding catalog Observed Example CVEs")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--max-prompt-chars", type=int)
     args = parser.parse_args()
     if (args.beam_width < 1 or args.top_k < 1 or args.bootstrap_samples < 1 or
             args.margin < 0 or not math.isfinite(args.margin) or
-            not math.isfinite(args.threshold)):
+            not math.isfinite(args.threshold) or not 0 <= args.dev_fraction < 1):
         parser.error("Invalid traversal or bootstrap parameters")
     if args.command == "run" and "one-shot" in args.methods and not args.one_shot_predictions:
         parser.error("--one-shot-predictions is required; export prompts and obtain real outputs first")

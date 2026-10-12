@@ -39,10 +39,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv sync
 ```
 
-Run commands from the checkout using `uv run` so they use the project's
+Run commands from the repository root using `uv run` so they use the project's
 environment. Alternatively, activate its `.venv` before using bare `python`.
-The absolute paths below refer to this checkout; substitute your checkout's
-path when working elsewhere.
+Set `REPO` to the absolute checkout path for the commands below:
+
+```bash
+REPO="$(pwd)"
+```
 
 ## Data Format
 
@@ -52,8 +55,10 @@ The tool expects CWE data in CSV format with the following columns:
 - `Description`: Short description of the weakness
 - `Extended Description`: Detailed description of the weakness
 
-Hierarchy experiments additionally require `Status` (for eligibility filtering)
-and `Related Weaknesses` (MITRE's structured `ChildOf` relationships with view IDs).
+Hierarchy experiments additionally require `Status` (for eligibility filtering),
+`Related Weaknesses` (MITRE's structured `ChildOf` relationships with view IDs),
+and `Weakness Abstraction` (for specificity-based stopping). Optional
+`Observed Examples` supplies catalog CVE references for leakage exclusion.
 The bundled CSV includes these columns.
 
 You can download the official CWE database in CSV format from [MITRE's CWE downloads page](https://cwe.mitre.org/data/downloads.html).
@@ -65,12 +70,12 @@ You can download the official CWE database in CSV format from [MITRE's CWE downl
 First, build the search index from your CWE CSV data:
 
 ```bash
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py generate-index /tmp/your-cwe-data.csv
+uv run python "$REPO/main.py" generate-index "$REPO/data/your-cwe-data.csv"
 ```
 
 Example:
 ```bash
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py generate-index /home/runner/work/cwe-classifier/cwe-classifier/data/all.csv
+uv run python "$REPO/main.py" generate-index "$REPO/data/all.csv"
 ```
 
 ### Search CWEs
@@ -78,7 +83,7 @@ uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py generate-i
 Search for relevant CWE entries using natural language queries:
 
 ```bash
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py search "your search query"
+uv run python "$REPO/main.py" search "your search query"
 ```
 
 #### Search Options
@@ -89,13 +94,13 @@ uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py search "yo
 
 ```bash
 # Basic search
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py search "buffer overflow"
+uv run python "$REPO/main.py" search "buffer overflow"
 
 # Search with more results
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py search "sql injection" --top-k 10
+uv run python "$REPO/main.py" search "sql injection" --top-k 10
 
 # Multi-word queries
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/main.py search "cross site scripting vulnerabilities"
+uv run python "$REPO/main.py" search "cross site scripting vulnerabilities"
 ```
 
 ### Sample Output
@@ -123,182 +128,111 @@ Found 5 results:
 
 ## Classification experiments
 
-[`experiments.ipynb`](experiments.ipynb) is the primary experiment workflow:
-configuration, benchmark preparation/audit, optional one-shot prompt export,
-flat/greedy/beam comparison, metrics, artifact export, and routing-error
-inspection are visible in separate cells. Graph/scorer implementations and
-metric utilities remain in tested Python modules. `experiment.py` retains artifact
-helpers and a compatibility CLI that executes the notebook's code cells; it does
-not maintain a second experiment implementation.
+[`experiments.ipynb`](experiments.ipynb) is the primary detailed user guide and
+experiment protocol: configuration, benchmark preparation/audit, prompt export,
+flat/greedy/beam/Chroma/one-shot comparisons, metrics, and routing-error inspection.
+`experiment.py` provides a compatibility CLI that executes the notebook's code cells.
+
+### Getting started and configuration
 
 Install the locked notebook extra and open the notebook:
 
 ```bash
 uv sync --extra notebook
-uv run --extra notebook jupyter lab /home/runner/work/cwe-classifier/cwe-classifier/experiments.ipynb
+uv run --extra notebook jupyter lab "$REPO/experiments.ipynb"
 ```
 
 Choose the project Python kernel and **Restart Kernel and Run All**. The default
-configuration runs three explicitly synthetic examples with the lexical scorer
-offline, writing artifacts to `/tmp/cwe-notebook-results`. It makes no model API
-calls or embedding downloads. It is a pipeline demonstration, not a held-out
-accuracy experiment. Set `demo` to false and supply a benchmark for real evaluation;
-enable Chroma, Jev, and one-shot explicitly. Paths derive from the notebook's
-`ROOT` setting; change it if your checkout is elsewhere.
+configuration runs synthetic examples offline with the lexical scorer: no model
+API calls or embedding downloads. This demonstrates mechanics, not held-out
+accuracy. The notebook detects the repository root automatically. Edit `config`
+to set `demo` to false, benchmark/output paths, command (`prepare`,
+`export-prompts`, or `run`), split, methods, scorer, and traversal options.
+Enable Chroma, Jev, and one-shot explicitly.
 
-The notebook compares the existing embedding approach with flat candidate
-classification, greedy traversal, beam traversal, and a naive single-call,
-zero-shot LLM baseline. The original search index and CLI are unchanged. Chroma experiments
-build a separate ephemeral index over the same eligible catalog as the other
-methods; initial embedding model downloads may require network access.
+Use independently annotated JSONL (`id`, `text`, `labels`, `split: dev|test`) or
+a locally downloaded NVD JSON dump, not CWE catalog descriptions. NVD splits use
+a stable seeded ID hash: `--dev-fraction` defaults to `0.2`; `--seed` controls
+reproducibility. Tune on dev, then freeze settings before test evaluation.
+Keep the original combined dev/test benchmark for overlap detection and evaluation,
+rather than feeding back a filtered export or an isolated split. Sanitization,
+deduplication, eligibility, ambiguity, and overlap exclusions are audited.
+Catalog CVE references in `Observed Examples` are excluded by default;
+`--include-observed-examples` opts out. `--training-ids` still excludes known
+training IDs. These checks cannot establish absence of model training contamination.
 
-The hierarchy uses `ChildOf` edges from a single view (default `1000`), preserves
-multiple parents, rejects cycles, and includes disconnected catalog entries as
-roots. Deprecated/obsolete entries are excluded. Traversal scores roots, then
-children, keeping the best `--beam-width` paths. It stops at a parent unless a
-child exceeds its score by `--margin` and meets `--threshold`. Scores are cached
-per example, and repeated terminal labels are deduplicated. Beam search may mitigate
-early routing errors; this hypothesis requires a real benchmark. Graph distance is shortest
-undirected distance in the selected view; disconnected pairs are reported.
+### Traversal options
 
-### Benchmark inputs
+The graph uses one `ChildOf` view (default `1000`), preserves multiple parents,
+rejects cycles, and includes disconnected entries as roots; deprecated/obsolete
+entries are excluded. `--beam-width` controls retained paths. `--stop-policy` selects:
 
-Use independently annotated vulnerability descriptions, not CWE catalog
-descriptions. Supply JSONL records with `id`, `text`, `labels` (a list of CWE
-identifiers), and an explicit `split` (`dev` or `test`); optional `ambiguous: true`
-marks annotations to exclude. Multiple labels represent acceptable answers.
-Alternatively, supply a locally downloaded NVD JSON dump with its
-`vulnerabilities` array. NVD inputs default to the test split: create a separate,
-disjoint development set before tuning. No live per-CVE API requests are made.
+- `specificity` (default): early stopping is allowed only at Base/Variant nodes;
+  broader nodes must descend.
+- `improvement`: the previous parent-margin rule, requiring a child to exceed
+  its parent by `--margin`.
+- `leaf`: always descend to the best eligible children.
 
-Inputs are normalized, explicit CWE identifiers are removed, repeated sanitized
-texts are deduplicated, and development/test overlap is excluded when both splits
-are present in the input. Keep the combined dev/test source for evaluation; the
-loader cannot detect overlap with an unseen separate file. Examples without
-eligible gold labels and ambiguous examples are excluded with audit counts.
-Known training overlap can be excluded using `--training-ids`, a JSON array of
-example IDs. This cannot establish absence of training contamination: record the
-model's training provenance and report unknown overlap honestly.
+`--threshold` gates both roots and children. A non-stoppable parent with no
+threshold-passing child abstains; an actual graph leaf can be terminal even if
+its abstraction is broad. Scores are cached per example and terminal labels
+deduplicated. Chroma uses a separate ephemeral index over the eligible catalog;
+embedding downloads may need network access. Index-document enrichment remains
+a future experiment; the search baseline and CLI are unchanged.
 
-In the notebook, edit `config`: select `command` (`prepare`, `export-prompts`,
-or `run`), paths, split, methods, scorer, and traversal settings. Tune on dev and
-freeze configuration before test evaluation. The compatibility CLI remains
-available for existing automation; replace benchmark and output paths as needed:
-
-```bash
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/experiment.py prepare \
-  --catalog /home/runner/work/cwe-classifier/cwe-classifier/data/all.csv \
-  --benchmark /tmp/nvd-dump.json --output /tmp/pilot.jsonl
-
-# Offline reference comparison; NOT evidence about a learned model.
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/experiment.py run \
-  --catalog /home/runner/work/cwe-classifier/cwe-classifier/data/all.csv \
-  --benchmark /tmp/pilot.jsonl --output /tmp/cwe-results \
-  --methods flat greedy beam --scorer lexical
-```
-
-### Plugging in a classifier
+### Models and one-shot baseline
 
 **Jev is TypeSafe's classifier/decision model**, not the lexical reference scorer.
 See [TypeSafe's introduction](https://docs.typesafe.ai/introduction) and the
 [official Python SDK](https://github.com/typesafe-ai/typesafe-sdk-python).
-The notebook supports an optional adapter, selected with
-`scorer: 'jev_scorer:create_scorer'` (CLI: `--scorer jev_scorer:create_scorer`).
-Install its pinned SDK with `uv sync --extra notebook --extra jev`; launch Jupyter
-with both extras enabled. Supply credentials through `TYPESAFE_API_KEY` in the
-launching environment, never in notebook cells, configuration, or saved output.
-Selecting this adapter sends input descriptions and candidate definitions to
-TypeSafe; use only public or approved benchmark data.
-
-The adapter is verified against SDK **0.7.4**. It asks a fixed independent
-`Noul` yes/no question per CWE and uses the returned likelihood, rather than
-comparing `Choice` probabilities normalized over different candidate sets.
-It batches 32 questions per request, disables SDK retries, and rejects changes
-in the response's model identifier within a run. Independent questions avoid
-candidate-set normalization but do not establish calibration: validate score
-comparability and thresholds on development data.
-Broad ancestor definitions may receive higher likelihoods than more specific
-children and cause early stopping. Inspect this bias before interpreting Jev
-traversal results; the adapter is an experimental integration, not evidence
-that the stopping rule is suitable for its scores.
-
-Set `TYPESAFE_DEFAULT_MODEL` in the launching environment to an immutable,
-account-supported model identifier for a reproducible run. Without it, the SDK
-default/alias is used and is **not** a guaranteed version pin. The notebook saves
-requested/resolved model metadata and per-example `model_requests`; scorer
-`calls` still counts adapter invocations, not HTTP requests. Token totals come
-from response usage where available; monetary cost remains unknown because the
-verified SDK response does not provide it. No live Jev results are bundled.
-
-`--scorer module:factory` loads a trusted local Python factory, called with the
-eligible catalog mapping. Its object must expose `score(text, labels)`, returning
-exactly those label IDs mapped to finite numeric scores (higher is better).
-Scores must be comparable across candidate sets, including parents and children;
-candidate-relative softmax probabilities do not satisfy this contract. A fixed
-label classifier can return a subset of its full-label scores. A candidate scorer
-can rank descriptions directly. Unsupported model labels must be resolved before
-using the full-catalog comparison.
-
-Adapters may expose `last_usage` after each score call, with `input_tokens`,
-`output_tokens`, and `cost` (USD); unknown fields remain null. Calls count scorer
-invocations, not an adapter's internal model batches. Report that distinction
-when comparing batching strategies. The built-in `lexical` scorer is a
-deterministic token-overlap reference only, not a trained classifier.
-
-### Naive one-shot baseline
-
-Export prompts containing the complete label-name list and sanitized input:
+Select `scorer: 'jev_scorer:create_scorer'` (CLI:
+`--scorer jev_scorer:create_scorer`) and install/launch with both extras:
 
 ```bash
-uv run python /home/runner/work/cwe-classifier/cwe-classifier/experiment.py export-prompts \
-  --catalog /home/runner/work/cwe-classifier/cwe-classifier/data/all.csv \
-  --benchmark /tmp/pilot.jsonl --output /tmp/prompts.jsonl
+uv sync --extra notebook --extra jev
+uv run --extra notebook --extra jev jupyter lab "$REPO/experiments.ipynb"
 ```
 
-Use background agents or your approved model runner to read these prompts and
-write real prediction files, without retrieval, traversal, examples, or retries.
-Do not script Copilot CLI calls. Each JSONL output record must retain `id`,
-`text_hash`, and `catalog_hash`, and include `model`, `calls: 1`,
-`truncated_labels: []`, `predictions` (zero or one eligible CWE),
-`latency_seconds`, and optionally `input_tokens`, `output_tokens`, and `cost`.
-Hashes guard against accidental input/catalog mismatches; they are not proof
-of how an external model was invoked. Save the model revision and generation
-settings alongside its outputs.
+Supply `TYPESAFE_API_KEY` through the launching environment, never notebook cells,
+configuration, or outputs. Jev sends descriptions and candidate definitions to
+TypeSafe: use only public or approved data. The adapter is verified against pinned
+SDK **0.7.4**: independent `Noul` yes/no likelihoods, batches of 32 questions,
+SDK retries disabled, and response model-identifier changes rejected within a run.
+Validate cross-candidate score comparability, thresholds, and ancestor bias on dev;
+independent questions do not establish calibration. Trusted custom
+`--scorer module:factory` adapters must return finite, comparable scores from
+`score(text, labels)`; candidate-relative softmax probabilities do not qualify.
 
-`--max-prompt-chars` optionally enforces a character budget during export.
-Export fails rather than silently truncating labels; verify the full prompt
-also fits your model's token budget. A truncated-label run is not a matched
-full-catalog comparison. No LLM requests or credentials are handled by this tool.
+Set `TYPESAFE_DEFAULT_MODEL` to an immutable, account-supported model identifier.
+The SDK default/alias is **not** a guaranteed version pin. Requested/resolved model
+metadata and `model_requests` are saved; scorer `calls` counts adapter invocations,
+not HTTP requests. Tokens are recorded when available; Jev monetary cost is unknown.
+The lexical scorer is only a deterministic reference; no live Jev results are bundled.
 
-In the notebook, add `one-shot` to `methods` and set `one_shot_predictions` to
-the real output file. Through the CLI, run all methods by adding
-`--one-shot-predictions /tmp/one-shot.jsonl` to the
-`run` command and omitting `--methods`. For a learned classifier, replace
-`--scorer lexical` with your adapter. Tune thresholds, margin, beam width, and
-model settings on development data only; freeze them before test evaluation.
+One-shot requires an **external model runner**: export complete-label prompts,
+make one real zero-shot call per input without retrieval, traversal, examples, or
+retries, then set `one_shot_predictions` and include `one-shot` in `methods`.
+Preserve `id`, `text_hash`, and `catalog_hash`; record model revision/settings,
+`calls: 1`, `truncated_labels: []`, zero or one eligible prediction, latency, and
+available usage. Export fails rather than truncating labels; check the model's token
+budget too. See the notebook for the full record contract and CLI equivalents.
 
 ### Results and validation
 
-Each method produces per-example JSONL predictions with gold labels, traversal
-paths, abstentions, latency, scoring calls, candidate counts, and available
-token/cost telemetry. `summary.json` records configuration, input/catalog hashes,
-exclusion audit, installed package versions, lockfile hash, scorer metadata,
-accuracy, macro-F1, top-k recall, hierarchy distance, and paired
+**Top-1 accuracy** (any acceptable gold label) is the headline metric, with paired
 bootstrap accuracy-difference intervals (`--seed`, `--bootstrap-samples`).
-Inspect paths for early routing mistakes and report results by gold label and
-specificity as well as aggregate scores.
+Top-k recall is descriptive only: greedy returns at most one prediction and beam
+returns a variable number. Report `prediction_count_histogram` and
+`mean_prediction_count` alongside it. Graph distance is shortest undirected
+top-1-to-gold distance in the selected view, with disconnected pairs reported.
+Per-example artifacts include paths, abstentions, latency, calls, candidates, and
+available token/cost usage; `summary.json` also records configuration, hashes,
+exclusion audit, package versions, and model metadata. Unknown usage is not zero
+cost; latency excludes setup/index generation.
 
-Top-1 accuracy accepts any annotated gold label. Interpret macro-F1 using the
-acceptable-target top-1 resolution convention recorded by the evaluator; it is
-not standard multilabel macro-F1 and is not interchangeable with
-single-label accuracy. One-shot supplies top-1 only, so do not compare its recall
-directly with another method's top-5 recall. Per-example latency excludes setup
-and index generation. Unknown usage is never presented as zero-cost execution.
-
-Run the standard-library tests from the checkout:
+Run the standard-library tests from the repository root:
 
 ```bash
-cd /home/runner/work/cwe-classifier/cwe-classifier
 uv run --extra notebook --extra jev python -m unittest discover -v
 ```
 

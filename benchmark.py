@@ -1,23 +1,20 @@
-"""Offline benchmark loading and evaluation (standard library only).
+"""Offline benchmark loading and evaluation (standard library only)."""
 
-Gold labels are acceptable alternatives, not simultaneous predictions. For
-macro F1, a correct top-1 resolves the singleton target to that prediction;
-an incorrect/absent top-1 resolves it to the numerically smallest gold CWE.
-Macro F1 averages over the union of resolved targets and emitted top-1 labels.
-Abstentions count as incorrect and do not emit a prediction.
-"""
-
+import hashlib
 import itertools
 import json
 import math
 import random
 import re
 from collections import Counter, defaultdict
+from collections.abc import Mapping
 from pathlib import Path
 
 
 _LABEL = re.compile(r"(?:CWE-)?([0-9]+)", re.IGNORECASE)
 _EXPLICIT_CWE = re.compile(r"\bCWE[\s-]*[0-9]+\b", re.IGNORECASE)
+_OBSERVED_REFERENCE = re.compile(r"REFERENCE:(.*?):DESCRIPTION:",
+                                 re.IGNORECASE | re.DOTALL)
 _TOP_K = (1, 3, 5, 10)
 
 
@@ -46,7 +43,7 @@ def _identifier(value):
     return value.strip()
 
 
-def _nvd_records(document):
+def _nvd_records(document, dev_fraction, seed):
     vulnerabilities = document.get("vulnerabilities")
     if not isinstance(vulnerabilities, list):
         raise ValueError("NVD vulnerabilities must be a list")
@@ -80,23 +77,55 @@ def _nvd_records(document):
                     value = description["value"]
                     if value.lower() not in ("nvd-cwe-noinfo", "nvd-cwe-other"):
                         labels.append(value)
-        yield {"id": cve.get("id"), "text": " ".join(texts),
-               "labels": labels, "split": "test"}
+        identifier = _identifier(cve.get("id"))
+        digest = hashlib.sha256(
+            "{}\n{}".format(seed, identifier.casefold()).encode("utf-8")).digest()
+        record_split = ("dev" if int.from_bytes(digest, "big")
+                        < int(dev_fraction * (1 << 256)) else "test")
+        yield {"id": identifier, "text": " ".join(texts),
+               "labels": labels, "split": record_split}
 
 
-def load_benchmark(path, eligible_labels, split="test", training_ids=None):
+def load_benchmark(path, eligible_labels, split="test", training_ids=None, *,
+                   catalog=None, exclude_observed_examples=True,
+                   dev_fraction=0.2, seed=0):
     """Load JSONL or an offline NVD JSON dump; return (examples, audit).
 
     Deduplication uses case-folded, whitespace-normalized, CWE-sanitized text
     across *all* splits before filtering. Every cross-split or training-text
-    overlap is excluded regardless of source order; within a split the first
-    occurrence wins. All IDs and records are validated even when excluded.
+    overlap is excluded regardless of source order; catalog Observed Examples
+    CVE IDs and their text duplicates are also excluded by default. Within a
+    split the first occurrence wins. All records are validated when excluded.
     Unsupported counts count each
     normalized label once per source record, before any exclusions.
     NVD noinfo/other markers mean no known gold labels.
+    NVD splits use SHA-256 of the integer seed and case-folded, stripped ID;
+    dev_fraction controls the development fraction, independently of order.
+    Explicit JSONL splits are never reassigned.
     """
     if split not in ("test", "dev"):
         raise ValueError("split must be 'test' or 'dev'")
+    if (isinstance(dev_fraction, bool)
+            or not isinstance(dev_fraction, (int, float))
+            or not math.isfinite(dev_fraction) or not 0 <= dev_fraction < 1):
+        raise ValueError("dev_fraction must be a finite number in [0, 1)")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError("seed must be an integer")
+    if not isinstance(exclude_observed_examples, bool):
+        raise ValueError("exclude_observed_examples must be a bool")
+    if catalog is not None and not isinstance(catalog, Mapping):
+        raise ValueError("catalog must be a mapping of labels to CSV rows")
+    observed_ids = set()
+    for row in (catalog or {}).values():
+        if not isinstance(row, Mapping):
+            raise ValueError("catalog rows must be mappings")
+        observed = row.get("Observed Examples", "")
+        if not isinstance(observed, str):
+            raise ValueError("Observed Examples must be a string")
+        observed_ids.update(
+            reference.strip().casefold()
+            for reference in _OBSERVED_REFERENCE.findall(observed)
+            if reference.strip().casefold().startswith("cve-"))
     if not isinstance(eligible_labels, (list, tuple, set, frozenset)):
         raise ValueError("eligible_labels must be a collection of CWE strings")
     eligible = {_label(value) for value in eligible_labels}
@@ -115,8 +144,9 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None):
         document = json.loads(content)
     except json.JSONDecodeError:
         document = None
-    if isinstance(document, dict) and "vulnerabilities" in document:
-        source = _nvd_records(document)
+    is_nvd = isinstance(document, dict) and "vulnerabilities" in document
+    if is_nvd:
+        source = _nvd_records(document, dev_fraction, seed)
     else:
         source = []
         for number, line in enumerate(content.splitlines(), 1):
@@ -128,13 +158,19 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None):
                 raise ValueError("Invalid JSONL on line {}".format(number)) from error
     audit = {"records_total": 0, "accepted": 0, "duplicate_text": 0,
              "wrong_split": 0, "ambiguous": 0, "training_overlap": 0,
-             "cross_split_overlap": 0,
+             "cross_split_overlap": 0, "catalog_overlap": 0,
+             "catalog_overlap_exclusion_enabled": exclude_observed_examples,
+             "split_assignment": (
+                 {"method": "seeded_id_sha256", "seed": seed,
+                  "dev_fraction": dev_fraction}
+                 if is_nvd else {"method": "explicit"}),
              "no_eligible_labels": 0, "unsupported_labels": {}}
     unsupported = Counter()
     seen_ids, seen_text = set(), set()
     normalized_records = []
     text_splits = defaultdict(set)
     training_texts = set()
+    catalog_texts = set()
     examples = []
     for record in source:
         if not isinstance(record, dict):
@@ -162,6 +198,8 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None):
         text_splits[normalized].add(record_split)
         if identifier in training:
             training_texts.add(normalized)
+        if exclude_observed_examples and identifier.casefold() in observed_ids:
+            catalog_texts.add(normalized)
         normalized_records.append((identifier, text, gold, record_split,
                                    ambiguous, normalized))
     for identifier, text, gold, record_split, ambiguous, normalized in normalized_records:
@@ -170,6 +208,8 @@ def load_benchmark(path, eligible_labels, split="test", training_ids=None):
         # Exclusion counters are mutually exclusive, in this priority order.
         if len(text_splits[normalized]) > 1:
             audit["cross_split_overlap"] += 1
+        elif normalized in catalog_texts:
+            audit["catalog_overlap"] += 1
         elif normalized in training_texts:
             audit["training_overlap"] += 1
         elif duplicate:
@@ -257,25 +297,14 @@ def metrics(records, graph):
         raise ValueError("graph must provide distance(a, b)")
     count = len(records)
     correct = 0
-    tp, fp, fn = Counter(), Counter(), Counter()
-    classes = set()
     hits = Counter()
+    prediction_counts = Counter(len(record["predictions"]) for record in records)
     distances = []
     unreachable = 0
     for record in records:
         prediction = _top1(record)
         valid = prediction in record["labels"]
         correct += valid
-        target = prediction if valid else record["labels"][0]
-        classes.add(target)
-        if prediction is not None:
-            classes.add(prediction)
-        if valid:
-            tp[prediction] += 1
-        else:
-            fn[target] += 1
-            if prediction is not None:
-                fp[prediction] += 1
         for k in _TOP_K:
             hits[k] += (not record["abstained"]
                         and bool(set(record["predictions"][:k])
@@ -292,14 +321,10 @@ def metrics(records, graph):
                 unreachable += 1
     result = {
         "exact_match_accuracy": correct / count if count else None,
-        "macro_f1": (sum(2 * tp[label] / (2 * tp[label] + fp[label] + fn[label])
-                         for label in classes) / len(classes) if classes else None),
-        "macro_f1_convention": (
-            "Acceptable-target top-1 resolution, not standard multilabel macro-F1: "
-            "a correct top-1 becomes the singleton target; an incorrect or absent "
-            "top-1 uses the numerically smallest gold CWE. Average F1 over the "
-            "union of resolved targets and emitted top-1 labels; abstentions "
-            "emit no prediction."),
+        "prediction_count_histogram": dict(sorted(prediction_counts.items())),
+        "mean_prediction_count": (
+            sum(size * frequency for size, frequency in prediction_counts.items())
+            / count if count else None),
         "top_k_recall": {k: hits[k] / count if count else None for k in _TOP_K},
         "mean_hierarchical_distance": (sum(distances) / len(distances)
                                        if distances else None),
