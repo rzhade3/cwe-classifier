@@ -1,5 +1,6 @@
 """Tests for the independent, offline benchmark interface."""
 
+import csv
 import json
 import unittest
 from pathlib import Path
@@ -109,6 +110,49 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(len(examples), 2)
         self.assertEqual(audit["catalog_overlap"], 0)
         self.assertFalse(audit["catalog_overlap_exclusion_enabled"])
+
+    def test_catalog_reference_boundary_ignores_description_suffix(self):
+        catalog = {79: {"Observed Examples":
+                       "::REFERENCE:CVE-2025-1:DESCRIPTION:NULL pointer "
+                       "dereference:LINK:https://example.org::"
+                       "REFERENCE:CVE-2025-2:DESCRIPTION:Second example::"}}
+        examples, audit = self.load([
+            example("CVE-2025-1", "First issue"),
+            example("CVE-2025-2", "Second issue")], catalog=catalog)
+        self.assertEqual(examples, [])
+        self.assertEqual(audit["catalog_overlap"], 2)
+
+    def test_catalog_colon_non_cve_reference_preserves_next_cve(self):
+        catalog = {79: {"Observed Examples":
+                       "::REFERENCE:SEC:report:123:DESCRIPTION:NULL pointer "
+                       "dereference:LINK:https://example.org::"
+                       "REFERENCE:CVE-2025-2:DESCRIPTION:Second example::"}}
+        examples, audit = self.load([
+            example("SEC:report:123", "Non-CVE issue"),
+            example("CVE-2025-2", "CVE issue")], catalog=catalog)
+        self.assertEqual([record["id"] for record in examples], ["SEC:report:123"])
+        self.assertEqual(audit["catalog_overlap"], 1)
+
+    def test_bundled_catalog_excludes_all_observed_cves(self):
+        with (Path(__file__).parent / "data" / "all.csv").open(
+                encoding="utf-8", newline="") as stream:
+            catalog = {int(row["CWE-ID"]): row for row in csv.DictReader(stream)}
+        observed_ids = {
+            entry[len("REFERENCE:"):].partition(":DESCRIPTION:")[0].casefold()
+            for row in catalog.values()
+            for entry in row["Observed Examples"].split("::")
+            if entry.startswith("REFERENCE:")
+            and entry[len("REFERENCE:"):].casefold().startswith("cve-")
+        }
+        self.assertEqual(len(observed_ids), 2032)
+        self.assertTrue({"cve-2004-0079", "cve-2005-0772", "cve-2007-5794",
+                         "cve-2008-3660", "cve-2009-2698", "cve-2020-29652"}
+                        .issubset(observed_ids))
+        examples, audit = self.load(
+            [example(identifier, "Issue {}".format(identifier))
+             for identifier in sorted(observed_ids)], catalog=catalog)
+        self.assertEqual(examples, [])
+        self.assertEqual(audit["catalog_overlap"], len(observed_ids))
 
     def test_overlap_exclusion_priority(self):
         catalog = {79: {"Observed Examples":

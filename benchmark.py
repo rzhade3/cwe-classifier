@@ -13,7 +13,7 @@ from pathlib import Path
 
 _LABEL = re.compile(r"(?:CWE-)?([0-9]+)", re.IGNORECASE)
 _EXPLICIT_CWE = re.compile(r"\bCWE[\s-]*[0-9]+\b", re.IGNORECASE)
-_OBSERVED_REFERENCE = re.compile(r"REFERENCE:(.*?):DESCRIPTION:",
+_OBSERVED_REFERENCE = re.compile(r"::REFERENCE:(.*?):DESCRIPTION:",
                                  re.IGNORECASE | re.DOTALL)
 _TOP_K = (1, 3, 5, 10)
 
