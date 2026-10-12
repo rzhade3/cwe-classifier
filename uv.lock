@@ -521,30 +521,28 @@ name = "cwe-classifier"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "chromadb" },
-    { name = "github-copilot-sdk" },
+    { name = "typesafe-sdk" },
 ]
 
 [package.optional-dependencies]
 notebook = [
+    { name = "chromadb" },
     { name = "jupyterlab" },
     { name = "matplotlib" },
     { name = "nbclient" },
     { name = "nbformat" },
     { name = "pandas" },
-    { name = "typesafe-sdk" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "chromadb", specifier = ">=1.0.13" },
-    { name = "github-copilot-sdk", specifier = ">=1.0.19" },
+    { name = "chromadb", marker = "extra == 'notebook'", specifier = ">=1.0.13" },
     { name = "jupyterlab", marker = "extra == 'notebook'", specifier = "==4.6.4" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = "==3.11.2" },
     { name = "nbclient", marker = "extra == 'notebook'", specifier = "==0.11.0" },
     { name = "nbformat", marker = "extra == 'notebook'", specifier = "==5.11.1" },
     { name = "pandas", marker = "extra == 'notebook'", specifier = "==3.0.6" },
-    { name = "typesafe-sdk", marker = "extra == 'notebook'", specifier = "==0.7.4" },
+    { name = "typesafe-sdk", specifier = "==0.7.4" },
 ]
 provides-extras = ["notebook"]
 
@@ -706,19 +704,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/00/f7/27f15d41f0ed38e8fcc488584b57e902b331da7f7c6dcda53721b15838fc/fsspec-2025.5.1.tar.gz", hash = "sha256:2e55e47a540b91843b755e83ded97c6e897fa0942b11490113f09e9c443c2475", size = 303033, upload-time = "2025-05-24T12:03:23.792Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bb/61/78c7b3851add1481b048b5fdc29067397a1784e2910592bc81bb3f608635/fsspec-2025.5.1-py3-none-any.whl", hash = "sha256:24d3a2e663d5fc735ab256263c4075f374a174c3410c0b25e5bd1970bceaa462", size = 199052, upload-time = "2025-05-24T12:03:21.66Z" },
-]
-
-[[package]]
-name = "github-copilot-sdk"
-version = "1.0.19"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "httpx" },
-    { name = "pydantic" },
-    { name = "python-dateutil" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/a5/4aca0e11ab250bcc5893cca442815c2dfa62191545a8d6d3d906db1125ac/github_copilot_sdk-1.0.19-py3-none-any.whl", hash = "sha256:25222c170e75d8beee29056ad68155d5345b79542b59315a3dafd40a0a3a12dd", size = 794259, upload-time = "2026-10-09T16:13:09.617Z" },
 ]
 
 [[package]]

@@ -1,59 +1,112 @@
-import argparse
-import sys
-from search_cwes import load_cwe_data, generate_index, search_cwe
+"""Suggest CWEs for a vulnerability description using Jev.
 
-def main():
-    """
-    Main CLI function that handles command line arguments.
-    """
-    parser = argparse.ArgumentParser(description='CWE Classifier - Generate index and search CWE database')
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-    
-    # Generate index command
-    generate_parser = subparsers.add_parser('generate-index', help='Generate CWE index from CSV file')
-    generate_parser.add_argument('filepath', help='Path to the CSV file containing CWE data')
-    
-    # Search command
-    search_parser = subparsers.add_parser('search', help='Search the CWE index')
-    search_parser.add_argument('query', nargs='+', help='Search query text')
-    search_parser.add_argument('--top-k', type=int, default=5, help='Number of top results to return (default: 5)')
-    
-    args = parser.parse_args()
-    
-    if args.command == 'generate-index':
-        try:
-            print(f"Loading CWE data from {args.filepath}...")
-            cwe_data = load_cwe_data(args.filepath)
-            print(f"Loaded {len(cwe_data)} CWE entries.")
-            generate_index(cwe_data)
-        except FileNotFoundError:
-            print(f"Error: File '{args.filepath}' not found.")
-            sys.exit(1)
-        except Exception as e:
-            print(f"Error generating index: {e}")
-            sys.exit(1)
-    
-    elif args.command == 'search':
-        try:
-            query = ' '.join(args.query)
-            print(f"Searching for: '{query}'")
-            results = search_cwe(query, top_k=args.top_k)
-            
-            if results['documents']:
-                print(f"\nFound {len(results['documents'][0])} results:\n")
-                for i, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0]), 1):
-                    print(f"{i}. CWE-{metadata['CWE-ID']}: {metadata['Name']}")
-                    print(f"   Description: {doc[:200]}{'...' if len(doc) > 200 else ''}")
-                    print()
-            else:
-                print("No results found.")
-        except Exception as e:
-            print(f"Error searching: {e}")
-            print("Make sure you have generated the index first using 'generate-index' command.")
-            sys.exit(1)
-    
+    uv run python main.py "The login form builds its SQL query from user input."
+    uv run python main.py --file advisory.md
+    cat advisory.md | uv run python main.py --json
+
+Walks the CWE hierarchy (research view 1000) with beam search, asking Jev at
+each step which refinement fits best, and prints the most likely CWEs with
+their path probabilities. Requires TYPESAFE_API_KEY in the environment or in
+a gitignored .env file. The text is sent to the configured Jev service.
+"""
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+from classification import CWEGraph, select_classify
+from experiment.jev_selector import create_rich_parent_selector
+
+
+ROOT = Path(__file__).resolve().parent
+CATALOG = ROOT / "data" / "all.csv"
+ENV_FILES = (ROOT / ".env", ROOT / "experiment" / ".env")
+TESTED_MODEL = "jev-1.13.0"
+BEAM_WIDTH = 3
+
+# From experiment/experiments.ipynb (500 GitHub-reviewed advisories, jev-1.13.0).
+ACCURACY_NOTE = (
+    "Suggestions only. On held-out GitHub advisories the first suggestion was "
+    "correct 45% of the time, and the right CWE was among the top 5 77% of the time."
+)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    text = read_text(args)
+    if not text:
+        sys.exit("error: no vulnerability text given (pass it as an argument, --file, or stdin)")
+    load_env_files()
+    if not os.environ.get("TYPESAFE_API_KEY"):
+        sys.exit("error: set TYPESAFE_API_KEY in your environment or in .env")
+
+    graph = CWEGraph(CATALOG)
+    model = args.model or os.environ.get("TYPESAFE_DEFAULT_MODEL") or TESTED_MODEL
+    selector = create_rich_parent_selector(graph.labels, model=model)
+    try:
+        result = select_classify(text, graph, selector, beam_width=BEAM_WIDTH, top_k=args.top_k)
+    except Exception as error:
+        sys.exit(f"error: Jev request failed ({type(error).__name__}: {error})")
+
+    suggestions = [
+        {"cwe": f"CWE-{label}", "name": graph.labels[label]["Name"],
+         "score": round(score, 4), "path": [f"CWE-{node}" for node in path]}
+        for label, score, path in zip(result.predictions, result.scores, result.paths)
+    ]
+    if args.json:
+        print(json.dumps({"model": selector.resolved_model, "suggestions": suggestions}, indent=2))
     else:
-        parser.print_help()
+        print_suggestions(suggestions, selector.resolved_model, result)
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Suggest CWEs for a vulnerability description using Jev.")
+    parser.add_argument("text", nargs="*", help="vulnerability description (default: stdin)")
+    parser.add_argument("--file", type=Path, help="read the description from a file")
+    parser.add_argument("--top-k", type=int, default=5, help="number of suggestions (default: 5)")
+    parser.add_argument("--model", help=f"Jev model version (default: {TESTED_MODEL})")
+    parser.add_argument("--json", action="store_true", help="print machine-readable JSON")
+    args = parser.parse_args(argv)
+    if args.top_k < 1:
+        parser.error("--top-k must be at least 1")
+    if args.file and args.text:
+        parser.error("give the description as text or --file, not both")
+    return args
+
+
+def read_text(args):
+    if args.file:
+        return args.file.read_text(encoding="utf-8").strip()
+    if args.text:
+        return " ".join(args.text).strip()
+    if not sys.stdin.isatty():
+        return sys.stdin.read().strip()
+    return ""
+
+
+def load_env_files():
+    """Read KEY=VALUE lines from .env files without overriding the environment."""
+    for path in ENV_FILES:
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.strip().partition("=")
+            if separator and key and not key.startswith("#"):
+                os.environ.setdefault(key.removeprefix("export ").strip(),
+                                      value.strip().strip("\"'"))
+
+
+def print_suggestions(suggestions, model, result):
+    print(f"Suggested CWEs ({model}, {result.calls} Jev calls, "
+          f"{result.latency_seconds:.1f}s):\n")
+    for rank, suggestion in enumerate(suggestions, 1):
+        print(f"{rank:2}. {suggestion['cwe']:<9} {suggestion['score']:>4.0%}  {suggestion['name']}")
+        print(f"    {' > '.join(suggestion['path'])}")
+    print(f"\n{ACCURACY_NOTE}")
+
 
 if __name__ == "__main__":
     main()

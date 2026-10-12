@@ -112,8 +112,10 @@ class ClassificationTests(unittest.TestCase):
         }, flat={"1": .1, "2": .2, "3": .3, "4": .35, "5": .05})
         flat = select_classify("", graph, selector, top_k=2)
         self.assertEqual((flat.predictions, flat.calls), (["4", "3"], 1))
+        self.assertEqual(flat.scores, [.35, .3])
         greedy = select_classify("", graph, selector, beam_width=1)
         self.assertEqual((greedy.predictions, greedy.paths), (["2"], [["1", "2"]]))
+        self.assertAlmostEqual(greedy.scores[0], .7 * .5 * .55)
         self.assertEqual(greedy.steps, [
             {"current": None, "probabilities": {"1": .7, "5": .3}},
             {"current": "1", "probabilities": {"2": .5, "3": .2, STOP: .3}},
@@ -122,6 +124,8 @@ class ClassificationTests(unittest.TestCase):
         beam = select_classify("", graph, selector, beam_width=2)
         self.assertEqual(beam.predictions, ["5", "1", "2", "4", "3"])
         self.assertEqual(beam.paths[3], ["1", "2", "4"])
+        self.assertEqual(len(beam.scores), len(beam.predictions))
+        self.assertEqual(beam.scores, sorted(beam.scores, reverse=True))
         self.assertEqual(select_classify("", graph, selector, 2, top_k=1).predictions, ["5"])
 
     def test_select_validation_and_usage(self):

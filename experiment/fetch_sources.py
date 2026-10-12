@@ -11,6 +11,7 @@ from pathlib import Path
 from classification import CWEGraph
 from . import fingerprint, write_jsonl
 from .ghsa import build_benchmark, load_advisories, snapshot_sha256
+from .jev_selector import FREQUENCIES, write_frequencies
 
 
 _REPOSITORY = "https://github.com/github/advisory-database.git"
@@ -101,8 +102,10 @@ def main():
     args = parser.parse_args()
     if not 0 <= args.dev_fraction < 1:
         parser.error("--dev-fraction must be in [0, 1)")
-    fetch_and_prepare(args.output, args.catalog, seed=args.seed,
-                      dev_fraction=args.dev_fraction)
+    output = fetch_and_prepare(args.output, args.catalog, seed=args.seed,
+                               dev_fraction=args.dev_fraction)
+    write_frequencies(output / "prepared" / "benchmark.jsonl", FREQUENCIES)
+    print(f"CWE label frequencies (dev split): {FREQUENCIES}")
 
 
 if __name__ == "__main__":

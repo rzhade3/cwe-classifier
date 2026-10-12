@@ -95,7 +95,7 @@ class JevSelectorTests(unittest.TestCase):
     def test_rich_parent_options_list_common_descendants_and_aliases(self):
         import tempfile
         from pathlib import Path
-        from experiment.jev_selector import create_rich_parent_selector
+        from experiment.jev_selector import create_rich_parent_selector, write_frequencies
 
         child = lambda parent: f"::NATURE:ChildOf:CWE ID:{parent}:VIEW ID:1000:ORDINAL:Primary::"
         catalog = {
@@ -123,7 +123,10 @@ class JevSelectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "benchmark.jsonl"
             path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
-            selector = create_rich_parent_selector(catalog, benchmark=path, limit=5)
+            frequencies = Path(directory) / "frequencies.json"
+            write_frequencies(path, frequencies)
+            self.assertEqual(json.loads(frequencies.read_text())["counts"], {"4": 2, "3": 1})
+            selector = create_rich_parent_selector(catalog, frequencies=frequencies, limit=5)
         self.assertEqual(selector.includes, {"1": ["4", "3"], "2": ["4", "3"]})
         selector.select("report", ["1", "5"])
         criteria = self.client.system_one.call_args.kwargs["questions"]["cwe"].criteria

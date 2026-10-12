@@ -30,13 +30,16 @@ is not possible; the runner skips it and records why. Use only data approved for
 are disabled; ``requests`` counts attempted calls.
 """
 
+import hashlib
+import json
 import math
 import os
 from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from classification import STOP
+from classification import STOP, CWEGraph, normalize_label
+from .benchmark import load_benchmark
 
 
 _QUESTION = "cwe"
@@ -225,29 +228,44 @@ def create_parent_selector(catalog):
     return JevSelector(catalog, stop_style="parent")
 
 
-def create_rich_parent_selector(catalog, benchmark=None, view="1000", limit=12):
+FREQUENCIES = Path(__file__).resolve().parent.parent / "data" / "cwe_frequencies.json"
+
+
+def create_rich_parent_selector(catalog, frequencies=FREQUENCIES, view="1000", limit=12,
+                                **options):
     """Parent-style selector whose options list common descendants and aliases.
 
     Each option with refinements gets "Includes: ..." naming up to ``limit``
     descendants (in ``view``), ranked by how often they label the benchmark's
-    dev split; the test split is never read.
+    dev split (see ``write_frequencies``); the test split is never read.
+    ``options`` (e.g. ``model``) are passed to ``JevSelector``.
     """
-    from classification import CWEGraph, normalize_label
-    from . import default_config
-    from .benchmark import load_benchmark
-
-    path = Path(benchmark or default_config(Path(__file__).resolve().parent.parent)["benchmark"])
-    counts = Counter(
-        normalize_label(label)
-        for record in load_benchmark(path, "dev")
-        for label in record["labels"]
-    )
+    counts = json.loads(Path(frequencies).read_text(encoding="utf-8"))["counts"]
     return JevSelector(
         catalog,
         stop_style="parent",
         includes=common_descendants(CWEGraph.from_rows(catalog.values(), view), counts, limit),
         alternate_terms=True,
+        **options,
     )
+
+
+def write_frequencies(benchmark, path=FREQUENCIES):
+    """Save how often each CWE labels the benchmark's dev split."""
+    records = load_benchmark(benchmark, "dev")
+    counts = Counter(
+        normalize_label(label) for record in records for label in record["labels"]
+    )
+    content = {
+        "source": {
+            "benchmark_sha256": hashlib.sha256(Path(benchmark).read_bytes()).hexdigest(),
+            "split": "dev",
+            "examples": len(records),
+        },
+        "counts": dict(sorted(counts.items(), key=lambda item: (-item[1], int(item[0])))),
+    }
+    Path(path).write_text(json.dumps(content, indent=1) + "\n", encoding="utf-8")
+    return content
 
 
 def common_descendants(graph, counts, limit):

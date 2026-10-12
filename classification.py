@@ -89,6 +89,8 @@ class Prediction:
     cost: float | None = None
     latency_seconds: float = 0.0
     abstained: bool = False
+    # Selector methods: probability of each prediction (beam/greedy: product of path choices).
+    scores: list = field(default_factory=list)
     # Selector questions in order: {"current": node or None, "probabilities": {option: p}}.
     steps: list = field(default_factory=list)
 
@@ -270,17 +272,19 @@ def select_classify(text, graph, selector, beam_width=None, top_k=5):
         return sorted(values.items(), key=lambda item: (-item[1], item[0]))
 
     if beam_width is None:
-        result.predictions = [
-            label for label, _ in ranked(ask(graph.labels))[:top_k]
-        ]
+        for label, probability in ranked(ask(graph.labels))[:top_k]:
+            result.predictions.append(label)
+            result.scores.append(probability)
     elif beam_width == 1:
-        path = [ranked(ask(graph.roots))[0][0]]
+        label, probability = ranked(ask(graph.roots))[0]
+        path = [label]
         while graph.children[path[-1]]:
-            choice = ranked(ask(graph.children[path[-1]], path[-1]))[0][0]
+            choice, chosen = ranked(ask(graph.children[path[-1]], path[-1]))[0]
+            probability *= chosen
             if choice == STOP:
                 break
             path.append(choice)
-        result.predictions, result.paths = [path[-1]], [path]
+        result.predictions, result.paths, result.scores = [path[-1]], [path], [probability]
     else:
         active = [(p, [label]) for label, p in ranked(ask(graph.roots))[:beam_width]]
         finished = {}
@@ -308,10 +312,11 @@ def select_classify(text, graph, selector, beam_width=None, top_k=5):
             # Path probabilities only shrink, so stop once top_k cannot change.
             if active and len(best) >= top_k and best[top_k - 1][0] >= active[0][0]:
                 break
-        for _, path in sorted(finished.values(),
-                              key=lambda item: (-item[0], item[1]))[:top_k]:
+        for probability, path in sorted(finished.values(),
+                                         key=lambda item: (-item[0], item[1]))[:top_k]:
             result.predictions.append(path[-1])
             result.paths.append(path)
+            result.scores.append(probability)
     result.latency_seconds = perf_counter() - start
     result.abstained = not result.predictions
     return result
