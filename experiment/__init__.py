@@ -16,8 +16,8 @@ def default_config(root):
         "models": {
             "lexical": "lexical",
             "vector": "vector",
-            "jev": "experiment.jev_selector:create_selector",
             "jev-parent": "experiment.jev_selector:create_parent_selector",
+            "jev-parent-rich": "experiment.jev_selector:create_rich_parent_selector",
         },
         "methods": ["flat", "greedy", "beam"],
         "max_examples": 500,

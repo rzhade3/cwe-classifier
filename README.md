@@ -166,8 +166,11 @@ keep `beam_width` routes) on the same examples:
 |---|---|---|
 | `lexical` | scorer | Token overlap (reference baseline) |
 | `vector` | scorer | Cosine similarity against the committed Chroma `cwe_index` |
-| `jev` | selector | Jev picks among offered CWEs; traversal offers an explicit `STOP` |
-| `jev-parent` | selector | Same, but traversal offers the current CWE itself instead of `STOP` |
+| `jev-parent` | selector | Jev picks among offered CWEs; traversal also offers the current CWE itself as a way to stop |
+| `jev-parent-rich` | selector | Same, plus each option's alternate names and up to 12 most common descendants (ranked by `dev`-split label counts) |
+
+`experiment.jev_selector:create_selector` (an abstract `STOP` option instead of
+the current CWE) remains available but is not run by default.
 
 Selectors are asked one Choice question per step, and beam ranks paths by the
 product of choice probabilities, so no cross-question calibration is needed.

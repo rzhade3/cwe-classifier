@@ -19,7 +19,15 @@ def normalize_label(value):
 class CWEGraph:
     def __init__(self, path, view="1000"):
         with open(path, encoding="utf-8", newline="") as stream:
-            rows = list(csv.DictReader(stream))
+            self._build(list(csv.DictReader(stream)), view)
+
+    @classmethod
+    def from_rows(cls, rows, view="1000"):
+        graph = cls.__new__(cls)
+        graph._build(list(rows), view)
+        return graph
+
+    def _build(self, rows, view):
         self.labels = {
             normalize_label(row["CWE-ID"]): row
             for row in rows if row["Status"] not in {"Deprecated", "Obsolete"}

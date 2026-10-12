@@ -92,6 +92,52 @@ class JevSelectorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             JevSelector(self.catalog, stop_style="none")
 
+    def test_rich_parent_options_list_common_descendants_and_aliases(self):
+        import tempfile
+        from pathlib import Path
+        from experiment.jev_selector import create_rich_parent_selector
+
+        child = lambda parent: f"::NATURE:ChildOf:CWE ID:{parent}:VIEW ID:1000:ORDINAL:Primary::"
+        catalog = {
+            "1": {"Name": "Root", "Description": "D1", "Status": "Stable",
+                  "Related Weaknesses": "", "Alternate Terms": ""},
+            "2": {"Name": "Middle", "Description": "D2", "Status": "Stable",
+                  "Related Weaknesses": child(1), "Alternate Terms": ""},
+            "3": {"Name": "Leaf A", "Description": "D3", "Status": "Stable",
+                  "Related Weaknesses": child(2),
+                  "Alternate Terms": "::TERM:LA:DESCRIPTION:Short: name.::TERM:Alpha::"},
+            "4": {"Name": "Leaf B", "Description": "D4", "Status": "Stable",
+                  "Related Weaknesses": child(2), "Alternate Terms": ""},
+            "5": {"Name": "Other", "Description": "D5", "Status": "Stable",
+                  "Related Weaknesses": "", "Alternate Terms": ""},
+        }
+        for label, row in catalog.items():
+            row["CWE-ID"] = label
+        rows = [
+            {"id": "a", "text": "x", "labels": ["CWE-4"], "split": "dev"},
+            {"id": "b", "text": "y", "labels": ["CWE-4"], "split": "dev"},
+            {"id": "c", "text": "z", "labels": ["CWE-3"], "split": "dev"},
+            # Test-split labels must never influence the option text.
+            {"id": "d", "text": "w", "labels": ["CWE-2"], "split": "test"},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "benchmark.jsonl"
+            path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+            selector = create_rich_parent_selector(catalog, benchmark=path, limit=5)
+        self.assertEqual(selector.includes, {"1": ["4", "3"], "2": ["4", "3"]})
+        selector.select("report", ["1", "5"])
+        criteria = self.client.system_one.call_args.kwargs["questions"]["cwe"].criteria
+        self.assertEqual(criteria["CWE-1"], "Root: D1 Includes: Leaf B; Leaf A.")
+        self.assertEqual(criteria["CWE-5"], "Other: D5")
+        selector.select("report", ["3", "4"], current="2")
+        criteria = self.client.system_one.call_args.kwargs["questions"]["cwe"].criteria
+        self.assertEqual(criteria["CWE-2"], "Middle: D2")
+        self.assertEqual(criteria["CWE-3"], "Leaf A: D3 Also known as: LA, Alpha.")
+        self.assertEqual(selector.metadata["stop_style"], "parent")
+        self.assertTrue(selector.metadata["alternate_terms"])
+        with self.assertRaises(ValueError):
+            JevSelector(catalog, includes={"1": ["99"]})
+
     def test_runs_flat_greedy_and_beam(self):
         graph = SimpleNamespace(
             labels=self.catalog, roots=["1", "2"],
