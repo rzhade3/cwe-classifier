@@ -6,14 +6,15 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "chromadb>=1.0.13",
+    "github-copilot-sdk>=1.0.19",
 ]
 
 [project.optional-dependencies]
 notebook = [
     "jupyterlab==4.6.4",
+    "matplotlib==3.11.2",
     "nbclient==0.11.0",
     "nbformat==5.11.1",
-]
-jev = [
+    "pandas==3.0.6",
     "typesafe-sdk==0.7.4",
 ]

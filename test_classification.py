@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from classification import CWEGraph, classify
+from classification import STOP, CWEGraph, classify, select_classify
 
 
 class Scorer:
@@ -101,6 +101,56 @@ class ClassificationTests(unittest.TestCase):
         self.write_catalog()
         with self.assertRaises(ValueError):
             CWEGraph(self.path)
+
+    def test_select_flat_greedy_stop_and_beam_path_probability(self):
+        graph = CWEGraph(self.path)
+        selector = Selector({
+            None: {"1": .7, "5": .3},
+            "1": {"2": .5, "3": .2, STOP: .3},
+            "2": {"4": .45, STOP: .55},
+            "3": {"4": .9, STOP: .1},
+        }, flat={"1": .1, "2": .2, "3": .3, "4": .35, "5": .05})
+        flat = select_classify("", graph, selector, top_k=2)
+        self.assertEqual((flat.predictions, flat.calls), (["4", "3"], 1))
+        greedy = select_classify("", graph, selector, beam_width=1)
+        self.assertEqual((greedy.predictions, greedy.paths), (["2"], [["1", "2"]]))
+        self.assertEqual(greedy.steps, [
+            {"current": None, "probabilities": {"1": .7, "5": .3}},
+            {"current": "1", "probabilities": {"2": .5, "3": .2, STOP: .3}},
+            {"current": "2", "probabilities": {"4": .45, STOP: .55}},
+        ])
+        beam = select_classify("", graph, selector, beam_width=2)
+        self.assertEqual(beam.predictions, ["5", "1", "2", "4", "3"])
+        self.assertEqual(beam.paths[3], ["1", "2", "4"])
+        self.assertEqual(select_classify("", graph, selector, 2, top_k=1).predictions, ["5"])
+
+    def test_select_validation_and_usage(self):
+        graph = CWEGraph(self.path)
+        selector = Selector({None: {"1": .7, "5": .3}, "1": {"2": .5, "3": .5}})
+        with self.assertRaisesRegex(ValueError, "offered options"):
+            select_classify("", graph, selector, beam_width=1)
+        selector = Selector({None: {"1": 1.5, "5": .3}})
+        with self.assertRaisesRegex(ValueError, r"\[0, 1\]"):
+            select_classify("", graph, selector, beam_width=1)
+        selector = Selector({}, flat={label: .2 for label in graph.labels})
+        selector.last_usage = {"input_tokens": 7}
+        self.assertEqual(select_classify("", graph, selector).input_tokens, 7)
+        selector.max_options = 4
+        with self.assertRaisesRegex(ValueError, "limit of 4"):
+            select_classify("", graph, selector)
+        selector.max_options = True
+        with self.assertRaisesRegex(ValueError, "max_options"):
+            select_classify("", graph, selector, beam_width=1)
+
+
+class Selector:
+    def __init__(self, tables, flat=None):
+        self.tables, self.flat = tables, flat
+
+    def select(self, text, labels, current=None):
+        if current is None and len(labels) > 2:
+            return dict(self.flat)
+        return dict(self.tables[current])
 
 
 if __name__ == "__main__":
