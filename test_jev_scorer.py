@@ -145,7 +145,9 @@ class JevScorerTests(unittest.TestCase):
     def test_invalid_endpoint_and_options_fail_before_client_creation(self):
         for endpoint in ("", "ftp://localhost", "******example.invalid",
                          "https://example.invalid?token=secret", "https://example.invalid/#x",
-                         "http://example.invalid", "https://bad host", 123):
+                         "http://example.invalid", "https://bad host", 123,
+                         "https://example.invalid:bad", "https://example.invalid:0",
+                         "https://example.invalid/\x00"):
             with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
                 JevScorer(self.catalog, base_url=endpoint)
         for timeout in (0, -1, True, float("nan"), float("inf"), "5"):

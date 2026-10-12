@@ -287,7 +287,10 @@ def _validated_records(records, *, resources):
                     raise ValueError("Missing result field: {}".format(field))
                 _number(record[field], field,
                         integer=field in ("calls", "input_tokens", "output_tokens"),
-                        nullable=field in ("input_tokens", "output_tokens", "cost"))
+                        nullable=field in ("calls", "input_tokens", "output_tokens", "cost"))
+            for field in ("model_requests", "http_requests", "prompt_invocations"):
+                if field in record:
+                    _number(record[field], field, integer=True, nullable=True)
             if not isinstance(record.get("paths"), list):
                 raise ValueError("paths must be a list")
             if "candidates_scored" in record:
@@ -351,10 +354,12 @@ def metrics(records, graph):
                             if count else None),
         "mean_latency_seconds": (sum(r["latency_seconds"] for r in records) / count
                                  if count else None),
-        "total_calls": sum(r["calls"] for r in records),
     }
-    for field in ("input_tokens", "output_tokens", "cost"):
-        known = [r[field] for r in records if r[field] is not None]
+    usage_fields = ["calls", "input_tokens", "output_tokens", "cost"]
+    usage_fields.extend(field for field in ("model_requests", "http_requests", "prompt_invocations")
+                        if any(field in record for record in records))
+    for field in usage_fields:
+        known = [r[field] for r in records if r.get(field) is not None]
         result["total_" + field] = sum(known) if len(known) == count else None
         result["known_" + field] = sum(known)
         result["unknown_" + field + "_count"] = count - len(known)

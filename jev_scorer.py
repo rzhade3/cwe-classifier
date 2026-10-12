@@ -50,9 +50,10 @@ class JevScorer:
             self.base_url = self.base_url.strip().rstrip("/")
             endpoint = urlsplit(self.base_url)
             if (endpoint.scheme not in {"https", "http"} or not endpoint.hostname
+                    or endpoint.port == 0
                     or endpoint.username is not None or endpoint.password is not None
                     or endpoint.query or endpoint.fragment
-                    or any(char.isspace() for char in self.base_url)):
+                    or any(char.isspace() or ord(char) < 32 for char in self.base_url)):
                 raise ValueError("Jev base_url must be HTTP(S) without credentials, query, or fragment")
             if endpoint.scheme == "http" and endpoint.hostname not in {"localhost", "127.0.0.1", "::1"}:
                 raise ValueError("Jev HTTP endpoints must be loopback; use HTTPS for remote services")

@@ -378,6 +378,26 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(scores["known_input_tokens"], 10)
         self.assertEqual(scores["total_candidates_scored"], 12)
 
+    def test_invocation_accounting_does_not_invent_model_calls(self):
+        scores = metrics([
+            result("a", calls=None, model_requests=None, http_requests=0,
+                   prompt_invocations=1),
+            result("b", calls=None, model_requests=None, http_requests=0,
+                   prompt_invocations=1)], Graph())
+        self.assertIsNone(scores["total_calls"])
+        self.assertEqual(scores["unknown_calls_count"], 2)
+        self.assertIsNone(scores["total_model_requests"])
+        self.assertEqual(scores["total_http_requests"], 0)
+        self.assertEqual(scores["total_prompt_invocations"], 2)
+        mixed = metrics([
+            result("a", model_requests=3, http_requests=3),
+            result("b", calls=None, prompt_invocations=1)], Graph())
+        self.assertIsNone(mixed["total_calls"])
+        self.assertEqual(mixed["known_calls"], 2)
+        self.assertIsNone(mixed["total_http_requests"])
+        self.assertEqual(mixed["known_http_requests"], 3)
+        self.assertEqual(mixed["unknown_http_requests_count"], 1)
+
     def test_empty_dataset(self):
         scores = metrics([], Graph())
         for field in ("exact_match_accuracy", "abstention_rate",
@@ -395,7 +415,9 @@ class MetricsTests(unittest.TestCase):
             dict(cost=float("inf")), dict(calls=True), dict(calls=1.5),
             dict(input_tokens=-1), dict(output_tokens=1.5),
             dict(abstained=1), dict(paths={}), dict(predictions=["79", "CWE-79"]),
-            dict(predictions=["bogus"]), dict(candidates_scored=-1)]
+            dict(predictions=["bogus"]), dict(candidates_scored=-1),
+            dict(model_requests=True), dict(http_requests=-1),
+            dict(prompt_invocations=1.5)]
         for change in changes:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 metrics([result(**change)], Graph())

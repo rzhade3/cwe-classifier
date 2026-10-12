@@ -224,7 +224,7 @@ Ambiguous/no-gold/insufficient-information cases remain counted and exported for
 review, not treated as incorrect CWE predictions or invented gold labels.
 
 Evaluation is bounded again by `--max-eval-examples` (default 300) for all inputs.
-Non-lexical classifier comparisons also start with `--max-live-examples 50`,
+Non-lexical classifier comparisons and live one-shot inference also start with `--max-live-examples 50`,
 an initial cost-checking pilot, not a precise population estimate. Selection is
 seeded and prioritizes the uniform natural sample; population/selected label
 counts are recorded so lost coverage is visible. Raise the limit deliberately
@@ -296,7 +296,8 @@ metadata and `model_requests` are saved; scorer `calls` counts adapter invocatio
 not HTTP requests. Tokens are recorded when available; Jev monetary cost is unknown.
 The lexical scorer is only a deterministic reference; no live Jev results are bundled.
 
-The pinned SDK supports `TYPESAFE_BASE_URL` for a **Jev-compatible API root**.
+The [pinned SDK](https://github.com/typesafe-ai/typesafe-sdk-python/blob/v0.7.4/src/typesafe_sdk/_core/client/sync/client.py)
+supports `TYPESAFE_BASE_URL` for a **Jev-compatible API root**.
 Alternatively, set notebook `jev_base_url` / CLI `--jev-base-url`; `jev_model` /
 `--jev-model` overrides `TYPESAFE_DEFAULT_MODEL`. Explicit options take precedence.
 `JevScorer` also accepts keyword arguments `base_url`, `model`, and `timeout`.
@@ -306,13 +307,63 @@ model identity, and usage schema; an OpenAI-compatible chat endpoint alone is
 endpoints require HTTPS; unencrypted HTTP is permitted only on loopback.
 URLs must not contain credentials, query parameters, or fragments.
 
-One-shot requires an **external model runner**: export complete-label prompts,
-make one real zero-shot call per input without retrieval, traversal, examples, or
-retries, then set `one_shot_predictions` and include `one-shot` in `methods`.
-Preserve `id`, `text_hash`, and `catalog_hash`; record model revision/settings,
-`calls: 1`, `truncated_labels: []`, zero or one eligible prediction, latency, and
-available usage. Export fails rather than truncating labels; check the model's token
-budget too. See the notebook for the full record contract and CLI equivalents.
+One-shot supports either imported predictions or an **explicitly enabled helper**.
+Include `one-shot` in `methods`, disable `demo`, and set `one_shot_provider` to
+`openai` or `copilot`, plus `one_shot_model` to an available model identifier.
+No new dependencies are needed for the helpers. Supply only approved data to
+the selected provider. All full-label prompts and example limits are checked
+before inference; labels are never silently truncated. Check the model's token
+budget too.
+
+For an **OpenAI-compatible Chat Completions server**, set `one_shot_endpoint` to
+the full URL, including `/chat/completions`, and optionally `one_shot_api_key_env`
+to the **name** of an environment variable holding its API key. Do not put the
+key itself in configuration. `one_shot_timeout` defaults to 120 seconds. The
+helper issues one nonstreaming POST per example, without tools, retries, or
+redirects. HTTPS is required except for loopback HTTP; URL credentials, query
+parameters, and fragments are rejected.
+
+```bash
+uv run python "$REPO/experiment.py" run \
+  --catalog "$REPO/data/all.csv" --benchmark /tmp/cwe-benchmark.jsonl \
+  --output /tmp/cwe-results --methods one-shot \
+  --one-shot-provider openai --one-shot-model your-model-id \
+  --one-shot-endpoint https://api.openai.com/v1/chat/completions \
+  --one-shot-api-key-env OPENAI_API_KEY
+```
+
+For **Copilot CLI**, install/authenticate the official `copilot` executable and
+choose `one_shot_provider='copilot'` / `--one-shot-provider copilot` instead.
+Do not supply an HTTP endpoint or API-key variable for that provider. Each input
+uses a fresh temporary working directory, no available tools, no repository
+custom instructions, no built-in MCP servers, and no session resumption, fleet,
+or autopilot. CLI failures/timeouts are not retried. Copilot's runtime still
+adds its own context and may make internal calls; this is **one prompt invocation**,
+not a verified single inference request. User-level CLI configuration can still
+affect runs; pin the CLI version and control that configuration for reproducibility.
+
+The removable transport boundary is `create_one_shot_helper(config)`: it returns
+a callable from prompt to a completion mapping. `run_one_shot` handles the same
+full-label prompts, prediction validation, fingerprints, and artifacts for either
+transport. Copilot CLI is **not an OpenAI-compatible HTTP server**; the wrapper
+does not expose its subscription credentials or use undocumented inference APIs.
+The HTTP helper targets the documented
+[Chat Completions contract](https://github.com/openai/openai-python#usage);
+CLI controls follow the official
+[programmatic reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-programmatic-reference).
+
+HTTP records count `http_requests`; CLI records count `prompt_invocations`.
+Underlying `model_requests` and `calls` remain unknown for these helpers; HTTP
+tokens are saved when reported, whereas CLI tokens and resolved model identity
+remain unknown. Missing monetary cost remains null, not zero. Per-example
+predictions are saved to `one-shot-predictions.jsonl` and normal evaluation outputs.
+
+For an external runner, `export-prompts` and `one_shot_predictions` /
+`--one-shot-predictions` remain supported. Preserve `id`, `text_hash`,
+`catalog_hash`, `truncated_labels: []`, zero or one eligible prediction, latency,
+and model identity. Legacy records declaring `calls: 1` still import; the new
+helper format explicitly distinguishes invocations from unknown inference calls.
+Choose either imported predictions or a live provider, not both.
 
 ### Results and validation
 
