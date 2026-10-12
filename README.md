@@ -282,7 +282,7 @@ uv run --extra notebook --extra jev jupyter lab "$REPO/experiments.ipynb"
 
 Supply `TYPESAFE_API_KEY` through the launching environment, never notebook cells,
 configuration, or outputs. Jev sends descriptions and candidate definitions to
-TypeSafe: use only public or approved data. The adapter is verified against pinned
+the configured service: use only public or approved data. The adapter is verified against pinned
 SDK **0.7.4**: independent `Noul` yes/no likelihoods, batches of 32 questions,
 SDK retries disabled, and response model-identifier changes rejected within a run.
 Validate cross-candidate score comparability, thresholds, and ancestor bias on dev;
@@ -295,6 +295,16 @@ The SDK default/alias is **not** a guaranteed version pin. Requested/resolved mo
 metadata and `model_requests` are saved; scorer `calls` counts adapter invocations,
 not HTTP requests. Tokens are recorded when available; Jev monetary cost is unknown.
 The lexical scorer is only a deterministic reference; no live Jev results are bundled.
+
+The pinned SDK supports `TYPESAFE_BASE_URL` for a **Jev-compatible API root**.
+Alternatively, set notebook `jev_base_url` / CLI `--jev-base-url`; `jev_model` /
+`--jev-model` overrides `TYPESAFE_DEFAULT_MODEL`. Explicit options take precedence.
+`JevScorer` also accepts keyword arguments `base_url`, `model`, and `timeout`.
+The root must implement the SDK's `/v1/systemone` route, independent Noul answers,
+model identity, and usage schema; an OpenAI-compatible chat endpoint alone is
+**not** Jev-compatible. Endpoint metadata is saved without API keys. Remote
+endpoints require HTTPS; unencrypted HTTP is permitted only on loopback.
+URLs must not contain credentials, query parameters, or fragments.
 
 One-shot requires an **external model runner**: export complete-label prompts,
 make one real zero-shot call per input without retrieval, traversal, examples, or

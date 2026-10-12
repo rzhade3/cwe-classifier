@@ -8,6 +8,9 @@ This avoids candidate-set normalization, but does NOT establish empirical CWE
 calibration: validate cross-label/batch comparability and thresholds on dev data.
 
 The SDK reads TYPESAFE_API_KEY; this adapter never accepts or stores credentials.
+Optionally set TYPESAFE_BASE_URL to a Jev-compatible API root, or pass base_url.
+The endpoint must implement the SDK's system_one/Noul wire contract, not just
+OpenAI Chat Completions. Credentials are sent to the configured service.
 Optionally set TYPESAFE_DEFAULT_MODEL to an account-supported immutable model
 name (SDK models.list() enumerates names; no discovery call is made here).
 Otherwise the SDK default/alias is used, not a guaranteed version pin.
@@ -30,12 +33,36 @@ totals unknown. close() releases the client; the caller must invoke it.
 
 import math
 import os
+from urllib.parse import urlsplit
 
 
 class JevScorer:
-    def __init__(self, catalog, batch_size=32):
+    def __init__(self, catalog, batch_size=32, *, base_url=None, model=None, timeout=None):
         if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
             raise ValueError("batch_size must be a positive integer")
+        self.base_url = (
+            base_url if base_url is not None
+            else os.environ.get("TYPESAFE_BASE_URL", "").strip() or None
+        )
+        if self.base_url is not None:
+            if not isinstance(self.base_url, str) or not self.base_url.strip():
+                raise ValueError("Jev base_url must be a nonempty API root")
+            self.base_url = self.base_url.strip().rstrip("/")
+            endpoint = urlsplit(self.base_url)
+            if (endpoint.scheme not in {"https", "http"} or not endpoint.hostname
+                    or endpoint.username is not None or endpoint.password is not None
+                    or endpoint.query or endpoint.fragment
+                    or any(char.isspace() for char in self.base_url)):
+                raise ValueError("Jev base_url must be HTTP(S) without credentials, query, or fragment")
+            if endpoint.scheme == "http" and endpoint.hostname not in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError("Jev HTTP endpoints must be loopback; use HTTPS for remote services")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            raise ValueError("Jev model must be a nonempty string")
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout) or timeout <= 0
+        ):
+            raise ValueError("Jev timeout must be positive and finite")
         try:
             from typesafe_sdk import Noul, RetryPolicy, TypeSafeClient, __version__
         except ModuleNotFoundError as error:
@@ -45,7 +72,10 @@ class JevScorer:
 
         self.batch_size = batch_size
         self.sdk_version = __version__
-        self.requested_model = os.environ.get("TYPESAFE_DEFAULT_MODEL", "").strip() or None
+        self.requested_model = (
+            model.strip() if model is not None
+            else os.environ.get("TYPESAFE_DEFAULT_MODEL", "").strip() or None
+        )
         self.resolved_model = None
         self.requests = 0
         self._questions = {
@@ -65,15 +95,19 @@ class JevScorer:
             )
             for label, row in catalog.items()
         }
-        self._client = TypeSafeClient(
-            model=self.requested_model, retry=RetryPolicy(max_retries=0)
-        )
+        options = {"model": self.requested_model, "retry": RetryPolicy(max_retries=0)}
+        if self.base_url is not None:
+            options["base_url"] = self.base_url
+        if timeout is not None:
+            options["timeout"] = timeout
+        self._client = TypeSafeClient(**options)
         self._closed = False
         self._reset_usage()
 
     @property
     def metadata(self):
         return {
+            "base_url": self.base_url,
             "requested_model": self.requested_model,
             "resolved_model": self.resolved_model,
             "sdk_version": self.sdk_version,

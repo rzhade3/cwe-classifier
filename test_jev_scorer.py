@@ -24,7 +24,7 @@ class JevScorerTests(unittest.TestCase):
         )
         self.addCleanup(patch.stopall)
         patch.dict(sys.modules, {"typesafe_sdk": self.sdk}).start()
-        patch.dict("os.environ", {"TYPESAFE_DEFAULT_MODEL": ""}).start()
+        patch.dict("os.environ", {"TYPESAFE_DEFAULT_MODEL": "", "TYPESAFE_BASE_URL": ""}).start()
         self.client.system_one.side_effect = self.respond
 
     @staticmethod
@@ -91,6 +91,7 @@ class JevScorerTests(unittest.TestCase):
         scorer = JevScorer(self.catalog)
         before = scorer.metadata
         self.assertEqual(before, {
+            "base_url": None,
             "requested_model": None,
             "resolved_model": None,
             "sdk_version": "0.7.4",
@@ -121,6 +122,39 @@ class JevScorerTests(unittest.TestCase):
         self.client.system_one.return_value = response
         with self.assertRaisesRegex(ValueError, "model changed"):
             scorer.score("report", ["2"])
+
+    def test_endpoint_environment_and_explicit_overrides(self):
+        with patch.dict("os.environ", {
+            "TYPESAFE_BASE_URL": " https://jev.example.invalid/api/ ",
+            "TYPESAFE_DEFAULT_MODEL": "environment-model",
+        }):
+            scorer = JevScorer(self.catalog)
+            self.assertEqual(scorer.metadata["base_url"], "https://jev.example.invalid/api")
+            self.assertEqual(self.sdk.TypeSafeClient.call_args.kwargs["base_url"],
+                             "https://jev.example.invalid/api")
+            scorer = JevScorer(self.catalog, base_url="http://localhost:8080/v1/",
+                               model="explicit-model", timeout=5)
+            options = self.sdk.TypeSafeClient.call_args.kwargs
+            self.assertEqual(options["base_url"], "http://localhost:8080/v1")
+            self.assertEqual(options["model"], "explicit-model")
+            self.assertEqual(options["timeout"], 5)
+            self.assertEqual(options["retry"].max_retries, 0)
+            self.assertEqual(scorer.metadata["requested_model"], "explicit-model")
+            self.assertNotIn("api_key", options)
+
+    def test_invalid_endpoint_and_options_fail_before_client_creation(self):
+        for endpoint in ("", "ftp://localhost", "******example.invalid",
+                         "https://example.invalid?token=secret", "https://example.invalid/#x",
+                         "http://example.invalid", "https://bad host", 123):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                JevScorer(self.catalog, base_url=endpoint)
+        for timeout in (0, -1, True, float("nan"), float("inf"), "5"):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                JevScorer(self.catalog, timeout=timeout)
+        for model in ("", " ", 123):
+            with self.subTest(model=model), self.assertRaises(ValueError):
+                JevScorer(self.catalog, model=model)
+        self.sdk.TypeSafeClient.assert_not_called()
 
     def test_missing_usage_stays_unknown_across_batches(self):
         scorer = JevScorer(self.catalog, batch_size=1)
@@ -208,6 +242,7 @@ class InstalledSDKContractTests(unittest.TestCase):
         sent = []
 
         def handler(request):
+            self.assertEqual(str(request.url), "https://jev.example.invalid/api/v1/systemone")
             payload = json.loads(request.content)
             sent.append(payload)
             return httpx2.Response(200, json={
@@ -222,7 +257,6 @@ class InstalledSDKContractTests(unittest.TestCase):
         def create_client(**kwargs):
             return real_client(
                 **kwargs, transport=httpx2.MockTransport(handler),
-                base_url="https://example.invalid",
             )
 
         catalog = {"79": {"Name": "XSS", "Description": "Improper output neutralization"}}
@@ -233,7 +267,7 @@ class InstalledSDKContractTests(unittest.TestCase):
             }),
             patch.object(typesafe_sdk, "TypeSafeClient", side_effect=create_client),
         ):
-            scorer = JevScorer(catalog)
+            scorer = JevScorer(catalog, base_url="https://jev.example.invalid/api")
             try:
                 self.assertIsInstance(scorer._questions["79"], typesafe_sdk.Noul)
                 self.assertEqual(scorer.score("test report", ["79"]), {"79": 0.75})
