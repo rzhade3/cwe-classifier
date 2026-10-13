@@ -1,9 +1,19 @@
 [project]
 name = "cwe-classifier"
 version = "0.1.0"
-description = "A semantic search tool for Common Weakness Enumeration (CWE) database using ChromaDB vector embeddings"
+description = "Suggest CWEs for vulnerability descriptions using Jev and the CWE hierarchy"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "typesafe-sdk==0.7.4",
+]
+
+[project.optional-dependencies]
+notebook = [
     "chromadb>=1.0.13",
+    "jupyterlab==4.6.4",
+    "matplotlib==3.11.2",
+    "nbclient==0.11.0",
+    "nbformat==5.11.1",
+    "pandas==3.0.6",
 ]
