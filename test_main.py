@@ -26,13 +26,14 @@ class MainTests(unittest.TestCase):
         self.addCleanup(patch.stopall)
         patch.object(main, "ENV_FILES", ()).start()
         patch.dict("os.environ", {"TYPESAFE_API_KEY": "test"}).start()
-        self.factory = patch.object(main, "create_rich_parent_selector",
-                                    return_value=FakeSelector()).start()
+        self.factory = patch.object(
+            main, "create_rich_parent_selector", return_value=FakeSelector()
+        ).start()
 
     def run_main(self, *argv):
         output = io.StringIO()
         with redirect_stdout(output):
-            main.main(list(argv))
+            main.main(["--provider", "jev", *argv])
         return output.getvalue()
 
     def test_json_output_lists_ranked_suggestions_with_paths(self):
@@ -54,10 +55,26 @@ class MainTests(unittest.TestCase):
         self.assertIn(main.ACCURACY_NOTE, output)
         self.assertEqual(self.factory.call_args.kwargs["model"], "jev-other")
 
+    def test_openai_is_the_default_without_a_typesafe_key(self):
+        with (
+            patch.dict(
+                "os.environ", {"OPENAI_API_KEY": "test", "TYPESAFE_API_KEY": ""}
+            ),
+            patch.object(
+                main, "create_decisions_selector", return_value=FakeSelector()
+            ) as factory,
+        ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                main.main(["--json", "SQL injection"])
+            self.assertTrue(json.loads(output.getvalue())["suggestions"])
+            self.assertEqual(factory.call_args.kwargs["model"], "gpt-6-luna")
+            self.factory.assert_not_called()
+
     def test_requires_api_key_and_text(self):
         with patch.dict("os.environ", {"TYPESAFE_API_KEY": ""}):
             with self.assertRaisesRegex(SystemExit, "TYPESAFE_API_KEY"):
-                main.main(["text"])
+                main.main(["--provider", "jev", "text"])
         with patch("sys.stdin", io.StringIO("")):
             with self.assertRaisesRegex(SystemExit, "no vulnerability text"):
                 main.main([])

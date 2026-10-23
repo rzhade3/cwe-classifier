@@ -23,23 +23,42 @@ class ClassificationTests(unittest.TestCase):
             ("1", ""),
             ("2", "::NATURE:ChildOf:CWE ID:1:VIEW ID:1000::"),
             ("3", "::NATURE:ChildOf:CWE ID:1:VIEW ID:1000::"),
-            ("4", "::NATURE:ChildOf:CWE ID:2:VIEW ID:1000::"
-             "NATURE:ChildOf:CWE ID:3:VIEW ID:1000::"),
+            (
+                "4",
+                "::NATURE:ChildOf:CWE ID:2:VIEW ID:1000::"
+                "NATURE:ChildOf:CWE ID:3:VIEW ID:1000::",
+            ),
             ("5", "::NATURE:ChildOf:CWE ID:4:VIEW ID:999::"),
         ]
         self.write_catalog()
 
     def write_catalog(self):
         with open(self.path, "w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=[
-                "CWE-ID", "Name", "Description", "Status", "Related Weaknesses",
-                "Weakness Abstraction"
-            ])
+            writer = csv.DictWriter(
+                stream,
+                fieldnames=[
+                    "CWE-ID",
+                    "Name",
+                    "Description",
+                    "Status",
+                    "Related Weaknesses",
+                    "Weakness Abstraction",
+                ],
+            )
             writer.writeheader()
             for label, relationships in self.rows:
-                writer.writerow({"CWE-ID": label, "Name": label, "Description": label,
-                                 "Status": "Stable", "Related Weaknesses": relationships,
-                                 "Weakness Abstraction": "Base" if label in {"2", "3", "4", "5"} else "Pillar"})
+                writer.writerow(
+                    {
+                        "CWE-ID": label,
+                        "Name": label,
+                        "Description": label,
+                        "Status": "Stable",
+                        "Related Weaknesses": relationships,
+                        "Weakness Abstraction": "Base"
+                        if label in {"2", "3", "4", "5"}
+                        else "Pillar",
+                    }
+                )
 
     def test_view_multiple_parents_and_distance(self):
         graph = CWEGraph(self.path)
@@ -50,7 +69,7 @@ class ClassificationTests(unittest.TestCase):
 
     def test_flat_and_greedy_misroute_beam_recovers(self):
         graph = CWEGraph(self.path)
-        scores = Scorer({"1": .1, "2": .5, "3": .6, "4": .9, "5": .2})
+        scores = Scorer({"1": 0.1, "2": 0.5, "3": 0.6, "4": 0.9, "5": 0.2})
         self.assertEqual(classify("", graph, scores).predictions[0], "4")
         # Greedy starts at disconnected root 5; beam preserves root 1 as well.
         self.assertEqual(classify("", graph, scores, 1).predictions, ["5"])
@@ -62,19 +81,25 @@ class ClassificationTests(unittest.TestCase):
 
     def test_stop_and_abstain(self):
         graph = CWEGraph(self.path)
-        scores = Scorer({"1": .8, "2": .7, "3": .6, "4": .9, "5": .2})
-        self.assertEqual(classify("", graph, scores, 1, stop_policy="improvement").predictions, ["1"])
+        scores = Scorer({"1": 0.8, "2": 0.7, "3": 0.6, "4": 0.9, "5": 0.2})
+        self.assertEqual(
+            classify("", graph, scores, 1, stop_policy="improvement").predictions, ["1"]
+        )
         self.assertEqual(classify("", graph, scores, 1).predictions, ["4"])
         self.assertTrue(classify("", graph, scores, threshold=1).abstained)
-        self.assertEqual(classify("", graph, scores, 1, margin=.3).predictions, ["2"])
+        self.assertEqual(classify("", graph, scores, 1, margin=0.3).predictions, ["2"])
 
     def test_leaf_policy_and_threshold_failure(self):
         graph = CWEGraph(self.path)
-        scores = Scorer({"1": .9, "2": .8, "3": .7, "4": .6, "5": .1})
+        scores = Scorer({"1": 0.9, "2": 0.8, "3": 0.7, "4": 0.6, "5": 0.1})
         self.assertEqual(classify("", graph, scores, 1).predictions, ["2"])
-        self.assertEqual(classify("", graph, scores, 1, stop_policy="leaf").predictions, ["4"])
-        self.assertTrue(classify("", graph, scores, 1, threshold=.85).abstained)
-        self.assertTrue(classify("", graph, scores, 1, threshold=.75, stop_policy="leaf").abstained)
+        self.assertEqual(
+            classify("", graph, scores, 1, stop_policy="leaf").predictions, ["4"]
+        )
+        self.assertTrue(classify("", graph, scores, 1, threshold=0.85).abstained)
+        self.assertTrue(
+            classify("", graph, scores, 1, threshold=0.75, stop_policy="leaf").abstained
+        )
         with self.assertRaises(ValueError):
             classify("", graph, scores, 1, stop_policy="unknown")
 
@@ -87,11 +112,11 @@ class ClassificationTests(unittest.TestCase):
 
     def test_usage_aggregation(self):
         graph = CWEGraph(self.path)
-        scorer = Scorer({"1": .1, "2": .5, "3": .6, "4": .9, "5": .2})
-        scorer.last_usage = {"input_tokens": 10, "output_tokens": 2, "cost": .01}
+        scorer = Scorer({"1": 0.1, "2": 0.5, "3": 0.6, "4": 0.9, "5": 0.2})
+        scorer.last_usage = {"input_tokens": 10, "output_tokens": 2, "cost": 0.01}
         result = classify("", graph, scorer, 2)
         self.assertEqual(result.input_tokens, result.calls * 10)
-        self.assertAlmostEqual(result.cost, result.calls * .01)
+        self.assertAlmostEqual(result.cost, result.calls * 0.01)
         scorer.last_usage = {"cost": -1}
         with self.assertRaises(ValueError):
             classify("", graph, scorer)
@@ -104,39 +129,51 @@ class ClassificationTests(unittest.TestCase):
 
     def test_select_flat_greedy_stop_and_beam_path_probability(self):
         graph = CWEGraph(self.path)
-        selector = Selector({
-            None: {"1": .7, "5": .3},
-            "1": {"2": .5, "3": .2, STOP: .3},
-            "2": {"4": .45, STOP: .55},
-            "3": {"4": .9, STOP: .1},
-        }, flat={"1": .1, "2": .2, "3": .3, "4": .35, "5": .05})
+        selector = Selector(
+            {
+                None: {"1": 0.7, "5": 0.3},
+                "1": {"2": 0.5, "3": 0.2, STOP: 0.3},
+                "2": {"4": 0.45, STOP: 0.55},
+                "3": {"4": 0.9, STOP: 0.1},
+            },
+            flat={"1": 0.1, "2": 0.2, "3": 0.3, "4": 0.35, "5": 0.05},
+        )
         flat = select_classify("", graph, selector, top_k=2)
         self.assertEqual((flat.predictions, flat.calls), (["4", "3"], 1))
-        self.assertEqual(flat.scores, [.35, .3])
+        self.assertEqual(flat.scores, [0.35, 0.3])
         greedy = select_classify("", graph, selector, beam_width=1)
         self.assertEqual((greedy.predictions, greedy.paths), (["2"], [["1", "2"]]))
-        self.assertAlmostEqual(greedy.scores[0], .7 * .5 * .55)
-        self.assertEqual(greedy.steps, [
-            {"current": None, "probabilities": {"1": .7, "5": .3}},
-            {"current": "1", "probabilities": {"2": .5, "3": .2, STOP: .3}},
-            {"current": "2", "probabilities": {"4": .45, STOP: .55}},
-        ])
+        self.assertAlmostEqual(greedy.scores[0], 0.7 * 0.5 * 0.55)
+        self.assertEqual(
+            greedy.steps,
+            [
+                {"current": None, "depth": 1, "probabilities": {"1": 0.7, "5": 0.3}},
+                {
+                    "current": "1",
+                    "depth": 2,
+                    "probabilities": {"2": 0.5, "3": 0.2, STOP: 0.3},
+                },
+                {"current": "2", "depth": 3, "probabilities": {"4": 0.45, STOP: 0.55}},
+            ],
+        )
         beam = select_classify("", graph, selector, beam_width=2)
         self.assertEqual(beam.predictions, ["5", "1", "2", "4", "3"])
         self.assertEqual(beam.paths[3], ["1", "2", "4"])
         self.assertEqual(len(beam.scores), len(beam.predictions))
         self.assertEqual(beam.scores, sorted(beam.scores, reverse=True))
-        self.assertEqual(select_classify("", graph, selector, 2, top_k=1).predictions, ["5"])
+        self.assertEqual(
+            select_classify("", graph, selector, 2, top_k=1).predictions, ["5"]
+        )
 
     def test_select_validation_and_usage(self):
         graph = CWEGraph(self.path)
-        selector = Selector({None: {"1": .7, "5": .3}, "1": {"2": .5, "3": .5}})
+        selector = Selector({None: {"1": 0.7, "5": 0.3}, "1": {"2": 0.5, "3": 0.5}})
         with self.assertRaisesRegex(ValueError, "offered options"):
             select_classify("", graph, selector, beam_width=1)
-        selector = Selector({None: {"1": 1.5, "5": .3}})
+        selector = Selector({None: {"1": 1.5, "5": 0.3}})
         with self.assertRaisesRegex(ValueError, r"\[0, 1\]"):
             select_classify("", graph, selector, beam_width=1)
-        selector = Selector({}, flat={label: .2 for label in graph.labels})
+        selector = Selector({}, flat={label: 0.2 for label in graph.labels})
         selector.last_usage = {"input_tokens": 7}
         self.assertEqual(select_classify("", graph, selector).input_tokens, 7)
         selector.max_options = 4

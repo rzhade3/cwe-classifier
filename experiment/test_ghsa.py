@@ -4,15 +4,20 @@ import unittest
 from pathlib import Path
 
 from experiment.ghsa import (
-    build_benchmark, describe, load_advisories, snapshot_sha256,
-    stratified_split, strip_cwe_mentions,
+    build_benchmark,
+    describe,
+    load_advisories,
+    snapshot_sha256,
+    stratified_split,
+    strip_cwe_mentions,
 )
-
 
 CATALOG = {
     "79": {"Weakness Abstraction": "Base", "Observed Examples": ""},
-    "89": {"Weakness Abstraction": "Base",
-           "Observed Examples": "::REFERENCE:CVE-2020-0001:DESCRIPTION:leak::"},
+    "89": {
+        "Weakness Abstraction": "Base",
+        "Observed Examples": "::REFERENCE:CVE-2020-0001:DESCRIPTION:leak::",
+    },
     "20": {"Weakness Abstraction": "Class", "Observed Examples": ""},
 }
 
@@ -25,8 +30,11 @@ def advisory(identifier, cwes=("CWE-79",), aliases=(), reviewed=True, **extra):
         "details": "Untrusted input (CWE-79) is rendered.",
         "published": "2025-03-16T08:00:00Z",
         "affected": [{"package": {"ecosystem": "npm", "name": "pkg"}}],
-        "database_specific": {"github_reviewed": reviewed, "cwe_ids": list(cwes),
-                              "severity": "HIGH"},
+        "database_specific": {
+            "github_reviewed": reviewed,
+            "cwe_ids": list(cwes),
+            "severity": "HIGH",
+        },
     }
     value.update(extra)
     return value
@@ -58,14 +66,25 @@ class GHSATests(unittest.TestCase):
         self.assertEqual(advisories[0]["labels"], ["CWE-20", "CWE-79"])
         self.assertEqual(advisories[0]["invalid_labels"], ["NVD-CWE-Other"])
         self.assertEqual(advisories[0]["ecosystems"], ["npm"])
-        self.assertEqual(exclusions, {"malformed": 1, "missing_text": 1, "no_cwe": 1,
-                                      "unreviewed": 1, "withdrawn": 1})
+        self.assertEqual(
+            exclusions,
+            {
+                "malformed": 1,
+                "missing_text": 1,
+                "no_cwe": 1,
+                "unreviewed": 1,
+                "withdrawn": 1,
+            },
+        )
 
     def test_benchmark_filters_dedupes_and_strips_labels_from_text(self):
         self.write(
             advisory("GHSA-a", ("CWE-79", "CWE-999"), aliases=["CVE-2025-1"]),
-            advisory("GHSA-b", aliases=["CVE-2025-1"],
-                     affected=[{"package": {"ecosystem": "PyPI"}}]),
+            advisory(
+                "GHSA-b",
+                aliases=["CVE-2025-1"],
+                affected=[{"package": {"ecosystem": "PyPI"}}],
+            ),
             advisory("GHSA-c", ("CWE-999",)),
             advisory("GHSA-d", ("CWE-89",), aliases=["CVE-2020-0001"]),
             advisory("GHSA-e", ("CWE-20",), aliases=["CVE-2025-2"]),
@@ -77,20 +96,25 @@ class GHSATests(unittest.TestCase):
         self.assertEqual(record["labels"], ["CWE-79"])
         self.assertEqual(record["ecosystems"], ["PyPI", "npm"])
         self.assertNotIn("CWE", record["text"])
-        self.assertEqual(audit["exclusions"], {
-            "catalog_leakage": 1, "conflicting_duplicate_labels": 2,
-            "merged_duplicates": 1, "no_catalog_cwe": 1,
-        })
+        self.assertEqual(
+            audit["exclusions"],
+            {
+                "catalog_leakage": 1,
+                "conflicting_duplicate_labels": 2,
+                "merged_duplicates": 1,
+                "no_catalog_cwe": 1,
+            },
+        )
         self.assertEqual(audit["ineligible_labels"], {"CWE-999": 2})
 
     def test_stratified_split_is_seeded_order_free_and_proportional(self):
         groups = [{"id": f"G{i}", "labels": ["CWE-79"]} for i in range(100)]
         groups += [{"id": f"R{i}", "labels": ["CWE-20", "CWE-89"]} for i in range(10)]
-        first = stratified_split(groups, seed=3, dev_fraction=.2)
-        self.assertEqual(first, stratified_split(list(reversed(groups)), 3, .2))
+        first = stratified_split(groups, seed=3, dev_fraction=0.2)
+        self.assertEqual(first, stratified_split(list(reversed(groups)), 3, 0.2))
         self.assertEqual(sum(first[f"G{i}"] == "dev" for i in range(100)), 20)
         self.assertEqual(sum(first[f"R{i}"] == "dev" for i in range(10)), 2)
-        self.assertNotEqual(first, stratified_split(groups, seed=4, dev_fraction=.2))
+        self.assertNotEqual(first, stratified_split(groups, seed=4, dev_fraction=0.2))
 
     def test_describe_and_helpers(self):
         records = [

@@ -1,237 +1,158 @@
 # CWE Classifier
 
-Suggest [CWE](https://cwe.mitre.org/) classifications for a vulnerability
-description. `main.py` walks MITRE's CWE hierarchy (research view 1000) with
-beam search, asking Jev (via `typesafe-sdk`) at each step which refinement
-fits best, and prints the most likely CWEs with their path probabilities.
+Suggest CWE labels from vulnerability descriptions with the CWE hierarchy,
+OpenAI Decisions, and reproducible classification experiments. Suggestions need
+human review; routing scores are not calibrated correctness probabilities.
+This revision does not establish OpenAI accuracy on a live benchmark.
 
-Treat the output as **suggestions for a human reviewer**, not final labels: on
-held-out GitHub advisories the first suggestion was right 45% of the time and
-the right CWE was in the top 5 77% of the time (see
-[Results](#results-and-recommendations)).
+## Install and classify
 
-## Installation
-
-Requires Python **3.13+** and [uv](https://docs.astral.sh/uv/):
+Python 3.13+ and [uv](https://docs.astral.sh/uv/) are required.
 
 ```bash
-git clone https://github.com/rzhade3/cwe-classifier.git
-cd cwe-classifier
-uv sync
+uv sync --locked
+export OPENAI_API_KEY='your-key'
+uv run python main.py "User input is concatenated into a SQL query."
+uv run python main.py --file advisory.md --json
+cat advisory.md | uv run python main.py --top-k 5
 ```
 
-Put your Jev API key in a gitignored `.env` file at the repository root (or
-export it in your shell):
+The default backend calls `client.decisions.create` with `gpt-6-luna`, a named
+choice question, and CWE definitions. A child question also offers its current
+parent as a stopping option. Requests use a 30-second timeout and zero SDK
+retries. `--model` selects an explicitly supplied provider model identifier.
+The API has a 255-choice limit, so full-catalog flat classification is skipped;
+hierarchy traversal fits smaller choice sets. Forced single-option edges are
+local and make no request.
+
+The JSON response contains the returned model and suggestions with `cwe`,
+`name`, `score`, and `path`. Beam width is three; `--top-k` limits returned
+suggestions. Scores multiply conditional routing choices and retain the best
+path to a DAG node; they are ranking heuristics, not posterior label confidence.
+
+Credentials can also be read from gitignored `.env` files at the repository
+root or under `experiment/`. The CLI never overwrites existing environment
+variables. The notebook uses environment credentials only. Input descriptions
+are sent to the selected provider; saved experiment artifacts include source
+text and decision traces.
+
+Legacy Jev remains available without being required by OpenAI:
 
 ```bash
-TYPESAFE_API_KEY=...
+uv sync --locked --extra jev
+export TYPESAFE_API_KEY='your-key'
+uv run --extra jev python main.py --provider jev --model jev-1.13.0 "SQL injection"
 ```
 
-Optional: `TYPESAFE_BASE_URL` for a Jev-compatible API root, and
-`TYPESAFE_DEFAULT_MODEL` to override the model. The CLI defaults to
-`jev-1.13.0`, the version the accuracy figures below were measured on; other
-versions are untested.
+Jev retains its historical rich-parent factory. Do not assume historical Jev
+results transfer to OpenAI or that provider defaults are immutable snapshots.
 
-## Usage
+## Reproduce an experiment
 
 ```bash
-# Text as arguments
-uv run python main.py "The login form concatenates the username into a SQL query."
-
-# From a file or stdin
-uv run python main.py --file advisory.md
-cat advisory.md | uv run python main.py --json
-
-# More suggestions / a different model
-uv run python main.py --top-k 10 --model jev-1.13.0 "heap overflow in PNG parser"
+uv sync --locked --extra notebook
+uv run --extra notebook python -m experiment.fetch_sources --revision FULL_40_CHARACTER_COMMIT_SHA
+uv run --extra notebook jupyter lab
 ```
 
-Sample output:
+Start Jupyter from the repository root and select the project Python kernel.
+The preparation command clones GitHub-reviewed advisories, records the source
+commit and snapshot hash, and writes a prepared benchmark and dataset report.
+Omit `--revision` only when deliberately acquiring a new snapshot; its resolved
+commit is still recorded. Existing output directories are refused. The CWE
+catalog (`data/all.csv`) is committed and hashed; source downloads are not
+implicitly performed by either analysis notebook.
 
-```
-Suggested CWEs (jev-1.13.0, 8 Jev calls, 1.4s):
+Read the notebooks in this order:
 
- 1. CWE-89     99%  Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')
-    CWE-707 > CWE-74 > CWE-943 > CWE-89
- 2. CWE-564     1%  SQL Injection: Hibernate
-    CWE-707 > CWE-74 > CWE-943 > CWE-89 > CWE-564
- ...
-```
+| Notebook | Purpose |
+|---|---|
+| `experiment/dataset_analysis.ipynb` | Exclusions, source provenance, duplicate handling, label support and split balance |
+| `experiment/experiments.ipynb` | Fixed comparison, metrics, matched uncertainty, cost, routing failures and descriptive calibration |
+| `experiment/hypotheses.ipynb` | Unpromoted alternatives: roots, parent vs STOP, option text, path scores and label policy |
 
-`--json` prints `{"model": ..., "suggestions": [{"cwe", "name", "score",
-"path"}, ...]}` for scripting. Scores are path probabilities: low top scores,
-or several close ones, mean the model is unsure and a reviewer should look
-closely. Each run makes one Jev request per beam step (typically under ten).
+The main notebook defaults to a 100-example **dev** run with only the offline
+lexical baseline. Set `RUN_REMOTE = True` to add OpenAI. It explicitly configures
+model, stop style and timeout through `model_options`; Jev and vector baselines
+are opt-in. Study dev failures, freeze choices and the primary comparison, then
+use a fresh holdout once. The old test split influenced historical prompt and
+beam choices; its previous results are exploratory, not validation.
 
-**Privacy:** the description you pass is sent to the configured Jev service.
-Do not submit text you are not allowed to share with it.
+The benchmark uses GitHub curators' CWE labels, restricted to active catalog
+weaknesses. Preparation excludes withdrawn/unreviewed entries, explicit CWE
+mentions, catalog-cited CVEs, alias/text duplicates and conflicting duplicate
+labels. Splitting is deterministic and stratified by exact label set. These
+controls do not eliminate pretraining contamination, near duplicates or
+package-family correlation. The dataset report records removed labels and
+exclusions; labels are not silently mapped to narrower leaf CWEs.
 
-## Results and recommendations
+## Results and recovery
 
-Measured with `experiment/experiments.ipynb` on 500 held-out GitHub-reviewed
-advisories (`test` split), `jev-1.13.0`:
+`metrics.json` records the full effective settings, catalog/benchmark hashes,
+selected IDs, source revision and hashes (including dirty source content),
+installed packages and provider metadata. If available, the matching dataset
+report is embedded and checked against the input hashes. The runner records
+per-example predictions, paths, routing scores, questions, usage and latency.
+Monetary cost stays unknown rather than applying unverified prices.
 
-| System | Method | Top-1 accuracy (95% CI) | Gold in top 5 |
-|---|---|---|---|
-| `jev-parent-rich` (used by `main.py`) | beam (width 3) | **44.6%** (40.3–49.0) | **77.2%** |
-| `jev-parent-rich` | greedy | 42.4% | – |
-| `jev-parent` (plain definitions) | greedy | 21.0% | – |
-| `vector` (Chroma, MiniLM embeddings) | flat | 18.4% | 38.2% |
-| `lexical` (token overlap) | flat | 12.4% | – |
+Content-addressed checkpoints include data, catalog, implementation, environment,
+prompt metadata and model options. Each successful example is appended and
+flushed before the next starts. Interrupted runs resume without repeating
+completed examples; a torn final append is recovered, while complete-line
+corruption is rejected. Shrinking the reported sample does not truncate cached
+larger runs. Changing prediction inputs creates a new checkpoint. Reports are
+published atomically per file; `metrics.json` is the final completion marker.
+A lock serializes writers in the same directory. After a process crash, verify
+that its PID is gone before manually removing `.run.lock`. Archive complete run
+folders before changing configurations; a report and several prediction files
+are not a transactional database snapshot for concurrent readers.
 
-What we learned:
+Refusals, malformed probabilities and model-version drift fail the run rather
+than dropping hard examples from accuracy. Resume only after resolving the
+failure; checkpoints retain completed predictions, not partially completed
+advisories. Model aliases may drift without changing their returned identifier;
+use distinct run names and a new holdout when upgrading them. External custom
+factories and mutable embedding functions require their own versioned metadata.
 
-- **Option text matters most.** Listing each option's common descendants
-  ("Includes: SQL Injection; OS Command Injection; ...") and alternate names
-  doubled accuracy (21% → 42%). Abstract top-level CWEs such as CWE-707 are
-  otherwise hard to recognise; first-step accuracy rose from 50% to 79%.
-- **Choosing beats yes/no scoring.** Asking Jev to pick one option per step
-  (including "the current CWE" as a way to stop) lets beam search rank paths by
-  the product of choice probabilities with no cross-call calibration.
-- **Embedding search is a weak baseline** for this task (18% top-1).
+Metric schema 2 distinguishes **hit@k** (any gold label retrieved) from
+**recall@k** (mean fraction of gold labels retrieved). It reports top-1 accuracy,
+Wilson intervals, macro top-1 F1, coverage and selective accuracy. The main
+notebook adds hierarchical similarity and paired bootstrap differences. Existing
+schema-1 result folders are not reused. A Wilson interval does not test the
+difference between two paired systems.
 
-Known weaknesses:
+## Optional vector baseline
 
-- **Going past the right answer** is the most common error (100 of 288
-  misses): e.g. XSS refined to *Basic XSS*. When the top suggestion looks too
-  specific, consider its parent (shown in the path).
-- **Memory-safety bugs** are often routed to *Incorrect Calculation* (CWE-682)
-  rather than buffer-overflow CWEs.
-- **Rare CWEs** (uncommon in GitHub advisories) are right only about 15% of
-  the time.
-
-Caveats: one model version, 500 examples, open-source package advisories only,
-and curator labels that were not independently adjudicated. Beam width and the
-rich option format were chosen after looking at `test` results, so the figures
-may be slightly optimistic. Suggested next steps: tune stopping on the `dev`
-split, evaluate 2,000 examples, test on your own (non-GHSA) reports, and
-measure agreement with human reviewers.
-
-## Data
-
-`data/all.csv` is MITRE's CWE catalog in CSV form (download updates from
-[MITRE's CWE downloads page](https://cwe.mitre.org/data/downloads.html)). The
-CLI uses `CWE-ID`, `Name`, `Description`, `Status`, `Related Weaknesses`
-(`ChildOf` relationships with view IDs) and `Alternate Terms`. Experiments also
-use `Extended Description`, `Weakness Abstraction` and `Observed Examples`.
-
-`data/cwe_frequencies.json` counts how often each CWE labels the benchmark's
-`dev` split; it ranks the descendants listed in each option's "Includes" text.
-`python -m experiment.fetch_sources` regenerates it. The `test` split is never
-used.
-
-## Classification experiments
-
-The notebook compares flat, greedy graph traversal, and beam search on a
-held-out benchmark built solely from GitHub-reviewed advisories in the
-[GitHub Advisory Database](https://github.com/github/advisory-database).
-Prepare a snapshot, study it, then run the experiment:
+The generated Chroma SQLite database is no longer version-controlled. Rebuild
+into a new directory after catalog or embedding changes:
 
 ```bash
-uv sync --extra notebook
-uv run --extra notebook python -m experiment.fetch_sources
-uv run --extra notebook jupyter lab experiment/dataset_analysis.ipynb
-uv run --extra notebook jupyter lab experiment/experiments.ipynb
+uv run --extra notebook python -m experiment.vector_scorer
 ```
 
-Choose the project Python kernel and **Restart Kernel and Run All**. The fetch
-command shallow-clones only `advisories/github-reviewed`, records the commit and
-a SHA-256 of the snapshot, and writes `benchmark.jsonl` plus
-`dataset-report.json` under `experiment/data/prepared/`, and refreshes
-`data/cwe_frequencies.json`. The clone takes time
-and disk space.
+Index creation refuses an existing collection; remove or archive it deliberately
+before rebuilding. Index metadata identifies the embedding function; loading
+checks catalog document consistency and records a fingerprint of vector values.
+The default Chroma embedding function may download model weights on first use.
+It is a baseline, not a substitute for validating retrieval recall or pinning
+external model weights.
 
-Gold labels are the `cwe_ids` GitHub curators assign to reviewed advisories.
-Labels absent from the CWE catalog (for example, categories or deprecated
-entries) are dropped, and advisories left with no label are excluded.
-Advisories cited in the catalog's Observed Examples are excluded to avoid
-leakage. Advisories sharing an alias or identical text are merged, and merged
-groups with disagreeing labels are excluded. Explicit CWE mentions are removed
-from the text. The `dev`/`test` split is seeded and stratified by exact label
-set; change it with `--seed` and `--dev-fraction`.
-
-`dataset_analysis.ipynb` covers the advisory funnel, unsupported labels, CWE
-long tail, label abstraction levels, ecosystems, publication years, and split
-balance. It keeps preprocessing analysis out of the experiment notebook.
-
-The experiment runs every model under every method (flat: consider the whole
-catalog at once; greedy: walk the `ChildOf` hierarchy keeping one route; beam:
-keep `beam_width` routes) on the same examples:
-
-| Model | Kind | How it ranks CWEs |
-|---|---|---|
-| `lexical` | scorer | Token overlap (reference baseline) |
-| `vector` | scorer | Cosine similarity against the committed Chroma `cwe_index` (rebuild with `uv run --extra notebook python -m experiment.vector_scorer`) |
-| `jev-parent` | selector | Jev picks among offered CWEs; traversal also offers the current CWE itself as a way to stop |
-| `jev-parent-rich` | selector | Same, plus each option's alternate names and up to 12 most common descendants (ranked by `dev`-split label counts) |
-
-`experiment.jev_selector:create_selector` (an abstract `STOP` option instead of
-the current CWE) remains available but is not run by default.
-
-Selectors are asked one Choice question per step, and beam ranks paths by the
-product of choice probabilities, so no cross-question calibration is needed.
-Jev accepts at most 255 options per question, so flat (all catalog CWEs) is
-skipped for it and listed under `skipped` in `metrics.json`.
-
-The Jev models need `TYPESAFE_API_KEY` in the shell or in `experiment/.env`.
-Optionally set `TYPESAFE_BASE_URL` to a Jev-compatible API root and
-`TYPESAFE_DEFAULT_MODEL` to an immutable model name. They make several requests
-per example; the notebook's cost table reports calls, tokens, and latency.
-Credentials are read from the environment and never written to outputs.
-(`main.py` also reads the root `.env`.)
-Vulnerability text and CWE definitions are sent to the configured service;
-confirm that this is appropriate for your data. The notebook shows top-1
-accuracy with 95% intervals, hierarchical and macro F1, per-CWE results, cost,
-where in the hierarchy each system fails (wrong root, wrong branch, stopped too
-early, went past gold), and, from Jev's saved per-step probabilities, step
-accuracy, calibration, and accuracy vs. coverage.
-
-Custom models are `module:factory` specs whose factory takes the catalog labels
-and returns either a scorer (`score(text, labels)`) or a selector
-(`select(text, labels, current=None)` returning probabilities, including `STOP`
-when `current` is set). Predictions (`<model>-<method>.jsonl`) and
-`metrics.json` are written to `experiment/results/`.
-
-The default run uses 500 seeded `test` examples. Examples come from one seeded
-shuffle of the split, so a later, larger run (e.g. `max_examples=2000`) contains
-the first 500; saved predictions are reused and only new examples are sent to
-the models, provided the benchmark file and prediction settings are unchanged.
-Pin `TYPESAFE_DEFAULT_MODEL` (e.g. `jev-1.13.0`) so new answers come from the same
-model version; the run stops if it changed. The notebook reads
-`experiment/.env` (gitignored) for these variables if they are not already set.
-
-Run the standard-library tests from the repository root:
+## Validation
 
 ```bash
-uv run --extra notebook python -m unittest discover -v
+uv sync --locked --extra notebook --extra jev
+uv run --extra notebook --extra jev python -m unittest discover -v
 ```
 
-Curator labels are consistently sourced but not independently adjudicated,
-and the benchmark covers only open-source package advisories. Treat metric
-differences as exploratory beyond that scope.
+Tests cover graph traversal, benchmark preparation and metrics, both installed
+SDK contracts with mocked HTTP transports, provider failures, cache invalidation,
+interruption recovery, CLI behavior and ordered notebook execution. They do not
+send live API requests. In restricted environments that cannot create Jupyter
+kernel sockets, use `CWE_NOTEBOOK_TEST_MODE=inprocess` for ordered execution of
+every plain Python cell; CI runs the notebooks in fresh kernels. No live OpenAI
+key was available during this refactor, so remote quality remains unmeasured.
 
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-## License
-
-[Add your license information here]
-
-## Troubleshooting
-
-- **`error: set TYPESAFE_API_KEY`**: add the key to `.env` or export it.
-- **`error: Jev request failed`**: check the key, network access, and
-  `TYPESAFE_BASE_URL`; the message includes the underlying error.
-- **Vector baseline errors** (`cwe_index` missing or stale): rebuild the Chroma
-  index with `uv run --extra notebook python -m experiment.vector_scorer`.
-
-## Acknowledgments
-
-- [MITRE Corporation](https://cwe.mitre.org/) for maintaining the CWE database
-- [GitHub Advisory Database](https://github.com/github/advisory-database) for the benchmark labels
-- [ChromaDB](https://www.trychroma.com/) for the vector baseline
+See [AUDIT.md](AUDIT.md) for findings, priority and acceptance criteria. OpenAI
+wire details follow the official [Decisions guide](https://developers.openai.com/api/docs/guides/decisions)
+and [API reference](https://developers.openai.com/api/reference/resources/decisions/methods/create),
+checked on 2026-10-23.

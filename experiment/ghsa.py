@@ -26,7 +26,6 @@ from pathlib import Path
 
 from classification import normalize_label
 
-
 _CWE_ID = re.compile(r"(?i)^CWE-(\d+)$")
 _CWE_MENTION = re.compile(r"\bCWE[\s-]*\d+\b", re.IGNORECASE)
 _OBSERVED_CVE = re.compile(
@@ -84,7 +83,8 @@ def _advisory(entry):
     if specific.get("github_reviewed") is not True:
         return None, "unreviewed"
     text = "\n\n".join(
-        part.strip() for part in (entry.get("summary"), entry.get("details"))
+        part.strip()
+        for part in (entry.get("summary"), entry.get("details"))
         if isinstance(part, str) and part.strip()
     )
     if not text:
@@ -100,19 +100,25 @@ def _advisory(entry):
             invalid.append(str(value))
     if not labels:
         return None, "no_cwe"
-    ecosystems = sorted({
-        affected["package"]["ecosystem"]
-        for affected in entry.get("affected") or []
-        if isinstance(affected, dict)
-        and isinstance(affected.get("package"), dict)
-        and isinstance(affected["package"].get("ecosystem"), str)
-        and affected["package"]["ecosystem"]
-    })
+    ecosystems = sorted(
+        {
+            affected["package"]["ecosystem"]
+            for affected in entry.get("affected") or []
+            if isinstance(affected, dict)
+            and isinstance(affected.get("package"), dict)
+            and isinstance(affected["package"].get("ecosystem"), str)
+            and affected["package"]["ecosystem"]
+        }
+    )
     identifier = entry["id"].strip().upper()
-    aliases = sorted({identifier} | {
-        alias.strip().upper() for alias in entry.get("aliases") or []
-        if isinstance(alias, str) and alias.strip()
-    })
+    aliases = sorted(
+        {identifier}
+        | {
+            alias.strip().upper()
+            for alias in entry.get("aliases") or []
+            if isinstance(alias, str) and alias.strip()
+        }
+    )
     return {
         "id": identifier,
         "aliases": aliases,
@@ -206,7 +212,8 @@ def build_benchmark(advisories, catalog, *, seed=0, dev_fraction=0.2):
     observed = set()
     for row in catalog.values():
         observed.update(
-            cve.upper() for cve in _OBSERVED_CVE.findall(row.get("Observed Examples") or "")
+            cve.upper()
+            for cve in _OBSERVED_CVE.findall(row.get("Observed Examples") or "")
         )
     audit = Counter()
     ineligible_labels = Counter()
@@ -235,17 +242,25 @@ def build_benchmark(advisories, catalog, *, seed=0, dev_fraction=0.2):
             continue
         audit["merged_duplicates"] += len(members) - 1
         canonical = members[0]
-        groups.append({
-            "id": canonical["id"],
-            "text": strip_cwe_mentions(canonical["text"]),
-            "labels": canonical["labels"],
-            "aliases": sorted({alias for member in members for alias in member["aliases"]}),
-            "ecosystems": sorted({
-                ecosystem for member in members for ecosystem in member["ecosystems"]
-            }),
-            "published": max(member["published"] for member in members),
-            "source": "ghsa",
-        })
+        groups.append(
+            {
+                "id": canonical["id"],
+                "text": strip_cwe_mentions(canonical["text"]),
+                "labels": canonical["labels"],
+                "aliases": sorted(
+                    {alias for member in members for alias in member["aliases"]}
+                ),
+                "ecosystems": sorted(
+                    {
+                        ecosystem
+                        for member in members
+                        for ecosystem in member["ecosystems"]
+                    }
+                ),
+                "published": max(member["published"] for member in members),
+                "source": "ghsa",
+            }
+        )
     splits = stratified_split(groups, seed, dev_fraction)
     for group in groups:
         group["split"] = splits[group["id"]]
@@ -253,7 +268,9 @@ def build_benchmark(advisories, catalog, *, seed=0, dev_fraction=0.2):
     return groups, {
         "advisories_with_cwe": len(advisories),
         "records": len(groups),
-        "split_counts": dict(sorted(Counter(group["split"] for group in groups).items())),
+        "split_counts": dict(
+            sorted(Counter(group["split"] for group in groups).items())
+        ),
         "exclusions": dict(sorted(audit.items())),
         "ineligible_labels": dict(ineligible_labels.most_common()),
         "seed": seed,
@@ -273,20 +290,28 @@ def describe(records, catalog=None, top=25):
         "top_cwes": labels.most_common(top),
         "top_10_label_share": head / total if total else 0.0,
         "cwes_with_at_most_5_examples": sum(count <= 5 for count in frequencies),
-        "labels_per_record": dict(sorted(
-            Counter(len(record["labels"]) for record in records).items()
-        )),
-        "ecosystems": dict(Counter(
-            ecosystem for record in records for ecosystem in record["ecosystems"]
-        ).most_common()),
-        "published_years": dict(sorted(Counter(
-            record["published"][:4] for record in records if record["published"]
-        ).items())),
+        "labels_per_record": dict(
+            sorted(Counter(len(record["labels"]) for record in records).items())
+        ),
+        "ecosystems": dict(
+            Counter(
+                ecosystem for record in records for ecosystem in record["ecosystems"]
+            ).most_common()
+        ),
+        "published_years": dict(
+            sorted(
+                Counter(
+                    record["published"][:4] for record in records if record["published"]
+                ).items()
+            )
+        ),
     }
     if catalog is not None:
         abstraction = Counter()
         for label, count in labels.items():
             row = catalog.get(normalize_label(label))
-            abstraction[(row or {}).get("Weakness Abstraction") or "not in catalog"] += count
+            abstraction[
+                (row or {}).get("Weakness Abstraction") or "not in catalog"
+            ] += count
         summary["label_abstraction"] = dict(abstraction.most_common())
     return summary
