@@ -1,14 +1,15 @@
 [project]
 name = "cwe-classifier"
 version = "0.1.0"
-description = "Suggest CWEs for vulnerability descriptions using Jev and the CWE hierarchy"
+description = "Suggest CWEs for vulnerability descriptions with reproducible hierarchy experiments and OpenAI Decisions"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "typesafe-sdk==0.7.4",
+    "openai>=3.26.0,<4",
 ]
 
 [project.optional-dependencies]
+jev = ["typesafe-sdk==0.7.4"]
 notebook = [
     "chromadb>=1.0.13",
     "jupyterlab==4.6.4",

@@ -11,7 +11,7 @@ from time import perf_counter
 
 def normalize_label(value):
     value = str(value).upper().removeprefix("CWE-")
-    if not value.isdigit():
+    if not value.isdigit() or int(value) < 1:
         raise ValueError(f"Invalid CWE label: {value}")
     return str(int(value))
 
@@ -30,15 +30,23 @@ class CWEGraph:
     def _build(self, rows, view):
         self.labels = {
             normalize_label(row["CWE-ID"]): row
-            for row in rows if row["Status"] not in {"Deprecated", "Obsolete"}
+            for row in rows
+            if row["Status"] not in {"Deprecated", "Obsolete"}
         }
+        active = [
+            row for row in rows if row["Status"] not in {"Deprecated", "Obsolete"}
+        ]
+        if len(active) != len(self.labels):
+            raise ValueError("Duplicate normalized CWE IDs in catalog")
         self.children = {label: set() for label in self.labels}
         self.parents = {label: set() for label in self.labels}
         for label, row in self.labels.items():
             for relation in row.get("Related Weaknesses", "").split("::"):
                 fields = relation.split(":")
                 values = dict(zip(fields[::2], fields[1::2]))
-                if values.get("NATURE") != "ChildOf" or values.get("VIEW ID") != str(view):
+                if values.get("NATURE") != "ChildOf" or values.get("VIEW ID") != str(
+                    view
+                ):
                     continue
                 parent = normalize_label(values["CWE ID"])
                 if parent in self.labels:
@@ -93,6 +101,7 @@ class Prediction:
     scores: list = field(default_factory=list)
     # Selector questions in order: {"current": node or None, "probabilities": {option: p}}.
     steps: list = field(default_factory=list)
+    requests: int = 0
 
 
 class LexicalScorer:
@@ -111,22 +120,22 @@ class LexicalScorer:
     def score(self, text, labels):
         query = self.words(text)
         return {
-            label: len(query & self.documents[label]) /
-            max(1, math.sqrt(len(query) * len(self.documents[label])))
+            label: len(query & self.documents[label])
+            / max(1, math.sqrt(len(query) * len(self.documents[label])))
             for label in labels
         }
 
 
-def load_scorer(spec, catalog):
+def load_scorer(spec, catalog, **options):
     """Load ``lexical``, ``vector``, or a ``module:factory`` scorer/selector."""
     if spec == "lexical":
-        return LexicalScorer(catalog)
+        return LexicalScorer(catalog, **options)
     if spec == "vector":
         spec = "experiment.vector_scorer:VectorScorer"
     module, separator, factory = spec.partition(":")
     if not separator:
         raise ValueError("Scorer must be lexical, vector, or module:factory")
-    return getattr(importlib.import_module(module), factory)(catalog)
+    return getattr(importlib.import_module(module), factory)(catalog, **options)
 
 
 def _add_usage(result, usage):
@@ -134,17 +143,34 @@ def _add_usage(result, usage):
     for key in ("input_tokens", "output_tokens", "cost"):
         value = usage.get(key)
         if value is not None:
-            if (isinstance(value, bool) or not isinstance(value, (int, float)) or
-                    not math.isfinite(value) or value < 0 or
-                    (key.endswith("_tokens") and not isinstance(value, int))):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value < 0
+                or (key.endswith("_tokens") and not isinstance(value, int))
+            ):
                 raise ValueError(f"Invalid scorer usage field: {key}")
         previous = getattr(result, key)
-        setattr(result, key, (previous or 0) + value if value is not None and
-                (result.calls == 1 or previous is not None) else None)
+        setattr(
+            result,
+            key,
+            (previous or 0) + value
+            if value is not None and (result.calls == 1 or previous is not None)
+            else None,
+        )
 
 
-def classify(text, graph, scorer, beam_width=None, top_k=5, threshold=0.0, margin=0.0,
-             stop_policy="specificity"):
+def classify(
+    text,
+    graph,
+    scorer,
+    beam_width=None,
+    top_k=5,
+    threshold=0.0,
+    margin=0.0,
+    stop_policy="specificity",
+):
     """Scores must be comparable across candidate sets and higher is better."""
     if top_k < 1 or (beam_width is not None and beam_width < 1):
         raise ValueError("top_k and beam_width must be positive")
@@ -161,9 +187,15 @@ def classify(text, graph, scorer, beam_width=None, top_k=5, threshold=0.0, margi
         if missing:
             values = scorer.score(text, missing)
             if set(values) != set(missing):
-                raise ValueError("Scorer must return exactly the requested label scores")
+                raise ValueError(
+                    "Scorer must return exactly the requested label scores"
+                )
             for label, value in values.items():
-                if not isinstance(value, (int, float)) or not math.isfinite(value):
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                ):
                     raise ValueError("Classifier scores must be finite numbers")
             cache.update(values)
             result.calls += 1
@@ -173,23 +205,30 @@ def classify(text, graph, scorer, beam_width=None, top_k=5, threshold=0.0, margi
 
     if beam_width is None:
         ranked = score(graph.labels)
-        result.predictions = [label for label in ranked if cache[label] >= threshold][:top_k]
+        result.predictions = [label for label in ranked if cache[label] >= threshold][
+            :top_k
+        ]
     else:
-        active = [(label, [label]) for label in score(graph.roots)[:beam_width]
-                  if cache[label] >= threshold]
+        active = [
+            (label, [label])
+            for label in score(graph.roots)[:beam_width]
+            if cache[label] >= threshold
+        ]
         finished = []
         while active:
             candidates = []
             score({child for label, _ in active for child in graph.children[label]})
             for label, path in active:
                 can_stop = stop_policy == "improvement" or (
-                    stop_policy == "specificity" and
-                    graph.labels[label].get("Weakness Abstraction") in {"Base", "Variant"}
+                    stop_policy == "specificity"
+                    and graph.labels[label].get("Weakness Abstraction")
+                    in {"Base", "Variant"}
                 )
                 children = [
-                    child for child in graph.children[label]
-                    if cache[child] >= threshold and
-                    (not can_stop or cache[child] > cache[label] + margin)
+                    child
+                    for child in graph.children[label]
+                    if cache[child] >= threshold
+                    and (not can_stop or cache[child] > cache[label] + margin)
                 ]
                 if children:
                     candidates.extend((child, path + [child]) for child in children)
@@ -232,7 +271,7 @@ def select_classify(text, graph, selector, beam_width=None, top_k=5):
       probable option at each step, ending at STOP or a leaf.
     - Beam keeps the ``beam_width`` most probable paths, where a path's
       probability is the product of its choices. Probabilities come from one
-      question at a time, so no cross-question score calibration is needed.
+      question at a time, but these are heuristic routing scores, not calibrated label probabilities.
 
     Every question and its full probability distribution is kept in
     ``result.steps`` for later analysis (calibration, coverage, step accuracy).
@@ -241,13 +280,15 @@ def select_classify(text, graph, selector, beam_width=None, top_k=5):
         raise ValueError("top_k and beam_width must be positive")
     max_options = getattr(selector, "max_options", None)
     if max_options is not None and (
-            isinstance(max_options, bool) or not isinstance(max_options, int)
-            or max_options < 2):
+        isinstance(max_options, bool)
+        or not isinstance(max_options, int)
+        or max_options < 2
+    ):
         raise ValueError("Selector max_options must be an integer of at least 2")
     result = Prediction()
     start = perf_counter()
 
-    def ask(labels, current=None):
+    def ask(labels, current=None, depth=1):
         labels = sorted(labels)
         offered = len(labels) + (current is not None)
         if max_options is not None and offered > max_options:
@@ -259,13 +300,22 @@ def select_classify(text, graph, selector, beam_width=None, top_k=5):
         if set(values) != expected:
             raise ValueError("Selector must return exactly the offered options")
         for value in values.values():
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not math.isfinite(value) or not 0 <= value <= 1):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 <= value <= 1
+            ):
                 raise ValueError("Selector probabilities must be in [0, 1]")
+        if not math.isclose(sum(values.values()), 1.0, abs_tol=1e-5):
+            raise ValueError("Selector probabilities must sum to one")
         result.calls += 1
         result.candidates_scored += len(labels)
         _add_usage(result, getattr(selector, "last_usage", {}))
-        result.steps.append({"current": current, "probabilities": dict(values)})
+        result.requests += getattr(selector, "last_usage", {}).get("requests", 1)
+        result.steps.append(
+            {"current": current, "probabilities": dict(values), "depth": depth}
+        )
         return values
 
     def ranked(values):
@@ -279,12 +329,18 @@ def select_classify(text, graph, selector, beam_width=None, top_k=5):
         label, probability = ranked(ask(graph.roots))[0]
         path = [label]
         while graph.children[path[-1]]:
-            choice, chosen = ranked(ask(graph.children[path[-1]], path[-1]))[0]
+            choice, chosen = ranked(
+                ask(graph.children[path[-1]], path[-1], len(path) + 1)
+            )[0]
             probability *= chosen
             if choice == STOP:
                 break
             path.append(choice)
-        result.predictions, result.paths, result.scores = [path[-1]], [path], [probability]
+        result.predictions, result.paths, result.scores = (
+            [path[-1]],
+            [path],
+            [probability],
+        )
     else:
         active = [(p, [label]) for label, p in ranked(ask(graph.roots))[:beam_width]]
         finished = {}
@@ -300,20 +356,22 @@ def select_classify(text, graph, selector, beam_width=None, top_k=5):
                 if not children:
                     finish(probability, path)
                     continue
-                values = ask(children, path[-1])
+                values = ask(children, path[-1], len(path) + 1)
                 finish(probability * values[STOP], path)
                 for child in children:
                     score = probability * values[child]
                     if score > candidates.get(child, (-1, None))[0]:
                         candidates[child] = (score, path + [child])
-            active = sorted(candidates.values(),
-                            key=lambda item: (-item[0], item[1]))[:beam_width]
+            active = sorted(candidates.values(), key=lambda item: (-item[0], item[1]))[
+                :beam_width
+            ]
             best = sorted(finished.values(), key=lambda item: (-item[0], item[1]))
             # Path probabilities only shrink, so stop once top_k cannot change.
             if active and len(best) >= top_k and best[top_k - 1][0] >= active[0][0]:
                 break
-        for probability, path in sorted(finished.values(),
-                                         key=lambda item: (-item[0], item[1]))[:top_k]:
+        for probability, path in sorted(
+            finished.values(), key=lambda item: (-item[0], item[1])
+        )[:top_k]:
             result.predictions.append(path[-1])
             result.paths.append(path)
             result.scores.append(probability)

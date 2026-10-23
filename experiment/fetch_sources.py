@@ -1,36 +1,58 @@
 """Download a pinned GitHub-reviewed advisory snapshot and build the benchmark."""
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
 from classification import CWEGraph
+
 from . import fingerprint, write_jsonl
 from .ghsa import build_benchmark, load_advisories, snapshot_sha256
 from .jev_selector import FREQUENCIES, write_frequencies
-
 
 _REPOSITORY = "https://github.com/github/advisory-database.git"
 _REVIEWED = "advisories/github-reviewed"
 
 
-def _fetch_advisories(raw):
+def _fetch_advisories(raw, revision=None):
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("revision must be a full lowercase commit SHA")
     repository = raw / "advisory-database"
-    subprocess.run([
-        "git", "clone", "--depth=1", "--filter=blob:none", "--sparse",
-        _REPOSITORY, str(repository),
-    ], check=True)
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--depth=1",
+            "--filter=blob:none",
+            "--sparse",
+            _REPOSITORY,
+            str(repository),
+        ],
+        check=True,
+    )
+    if revision is not None:
+        subprocess.run(
+            ["git", "-C", str(repository), "fetch", "--depth=1", "origin", revision],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repository), "checkout", "--detach", revision], check=True
+        )
     subprocess.run(
         ["git", "-C", str(repository), "sparse-checkout", "set", _REVIEWED],
         check=True,
     )
     revision = subprocess.run(
         ["git", "-C", str(repository), "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     snapshot = repository / _REVIEWED
     if not snapshot.is_dir():
@@ -49,6 +71,10 @@ def prepare(snapshot, catalog, output, *, revision, seed=0, dev_fraction=0.2):
     output.mkdir(parents=True, exist_ok=True)
     write_jsonl(output / "benchmark.jsonl", benchmark)
     report = {
+        "catalog_sha256": hashlib.sha256(Path(catalog).read_bytes()).hexdigest(),
+        "benchmark_file_sha256": hashlib.sha256(
+            (output / "benchmark.jsonl").read_bytes()
+        ).hexdigest(),
         "source": {
             "repository": _REPOSITORY,
             "path": _REVIEWED,
@@ -68,7 +94,7 @@ def prepare(snapshot, catalog, output, *, revision, seed=0, dev_fraction=0.2):
     return benchmark, report
 
 
-def fetch_and_prepare(output, catalog, *, seed=0, dev_fraction=0.2):
+def fetch_and_prepare(output, catalog, *, seed=0, dev_fraction=0.2, revision=None):
     output = Path(output).expanduser().resolve()
     catalog = Path(catalog).expanduser().resolve()
     if output.exists():
@@ -80,9 +106,19 @@ def fetch_and_prepare(output, catalog, *, seed=0, dev_fraction=0.2):
     try:
         raw = staging / "raw"
         raw.mkdir()
-        snapshot, revision = _fetch_advisories(raw)
-        prepare(snapshot, catalog, staging / "prepared", revision=revision,
-                seed=seed, dev_fraction=dev_fraction)
+        snapshot, revision = (
+            _fetch_advisories(raw)
+            if revision is None
+            else _fetch_advisories(raw, revision)
+        )
+        prepare(
+            snapshot,
+            catalog,
+            staging / "prepared",
+            revision=revision,
+            seed=seed,
+            dev_fraction=dev_fraction,
+        )
         os.replace(staging, output)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -95,15 +131,25 @@ def fetch_and_prepare(output, catalog, *, seed=0, dev_fraction=0.2):
 def main():
     repository = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=repository / "experiment" / "data")
+    parser.add_argument(
+        "--output", type=Path, default=repository / "experiment" / "data"
+    )
     parser.add_argument("--catalog", type=Path, default=repository / "data" / "all.csv")
+    parser.add_argument(
+        "--revision", help="full advisory-database commit SHA for replay"
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--dev-fraction", type=float, default=0.2)
     args = parser.parse_args()
     if not 0 <= args.dev_fraction < 1:
         parser.error("--dev-fraction must be in [0, 1)")
-    output = fetch_and_prepare(args.output, args.catalog, seed=args.seed,
-                               dev_fraction=args.dev_fraction)
+    output = fetch_and_prepare(
+        args.output,
+        args.catalog,
+        seed=args.seed,
+        dev_fraction=args.dev_fraction,
+        revision=args.revision,
+    )
     write_frequencies(output / "prepared" / "benchmark.jsonl", FREQUENCIES)
     print(f"CWE label frequencies (dev split): {FREQUENCIES}")
 

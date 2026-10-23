@@ -12,7 +12,10 @@ from experiment.jev_selector import JevSelector
 class JevSelectorTests(unittest.TestCase):
     def setUp(self):
         self.catalog = {
-            str(index): {"Name": f"Weakness {index}", "Description": f"Definition {index}"}
+            str(index): {
+                "Name": f"Weakness {index}",
+                "Description": f"Definition {index}",
+            }
             for index in range(1, 6)
         }
         self.client = Mock()
@@ -24,7 +27,9 @@ class JevSelectorTests(unittest.TestCase):
         )
         self.addCleanup(patch.stopall)
         patch.dict(sys.modules, {"typesafe_sdk": self.sdk}).start()
-        patch.dict("os.environ", {"TYPESAFE_DEFAULT_MODEL": "", "TYPESAFE_BASE_URL": ""}).start()
+        patch.dict(
+            "os.environ", {"TYPESAFE_DEFAULT_MODEL": "", "TYPESAFE_BASE_URL": ""}
+        ).start()
         self.model = "test-model-version"
         self.client.system_one.side_effect = self.respond
 
@@ -33,9 +38,13 @@ class JevSelectorTests(unittest.TestCase):
         weights = {key: (1 if key == STOP else int(key[4:])) for key in criteria}
         total = sum(weights.values())
         return SimpleNamespace(
-            choices={"cwe": SimpleNamespace(
-                probabilities={key: weight / total for key, weight in weights.items()}
-            )},
+            choices={
+                "cwe": SimpleNamespace(
+                    probabilities={
+                        key: weight / total for key, weight in weights.items()
+                    }
+                )
+            },
             model=self.model,
             usage=SimpleNamespace(input_tokens=10, output_tokens=2),
         )
@@ -43,17 +52,27 @@ class JevSelectorTests(unittest.TestCase):
     def test_one_choice_question_over_offered_cwes(self):
         selector = load_scorer("experiment.jev_selector:create_selector", self.catalog)
         values = selector.select("report", ["2", "3"])
-        self.assertEqual(values, {"2": .4, "3": .6})
+        self.assertEqual(values, {"2": 0.4, "3": 0.6})
         call = self.client.system_one.call_args.kwargs
         self.assertEqual(call["state"], {"document": "report"})
         question = call["questions"]["cwe"]
-        self.assertEqual(question.criteria, {
-            "CWE-2": "Weakness 2: Definition 2", "CWE-3": "Weakness 3: Definition 3",
-        })
+        self.assertEqual(
+            question.criteria,
+            {
+                "CWE-2": "Weakness 2: Definition 2",
+                "CWE-3": "Weakness 3: Definition 3",
+            },
+        )
         self.assertNotIn(STOP, question.instructions)
-        self.assertEqual(selector.last_usage, {
-            "input_tokens": 10, "output_tokens": 2, "cost": None, "requests": 1,
-        })
+        self.assertEqual(
+            selector.last_usage,
+            {
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "cost": None,
+                "requests": 1,
+            },
+        )
         kwargs = self.sdk.TypeSafeClient.call_args.kwargs
         self.assertEqual(kwargs["retry"].max_retries, 0)
         self.assertEqual(selector.metadata["resolved_model"], "test-model-version")
@@ -69,7 +88,7 @@ class JevSelectorTests(unittest.TestCase):
     def test_traversal_offers_stop_for_current_cwe(self):
         selector = JevSelector(self.catalog)
         values = selector.select("report", ["4"], current="2")
-        self.assertEqual(values, {"4": .8, STOP: .2})
+        self.assertEqual(values, {"4": 0.8, STOP: 0.2})
         question = self.client.system_one.call_args.kwargs["questions"]["cwe"]
         self.assertIn("CWE-2 (Weakness 2)", question.criteria[STOP])
         self.assertIn("refines CWE-2", question.instructions)
@@ -81,12 +100,16 @@ class JevSelectorTests(unittest.TestCase):
         values = selector.select("report", ["4"], current="2")
         self.assertEqual(values, {"4": 4 / 6, STOP: 2 / 6})
         question = self.client.system_one.call_args.kwargs["questions"]["cwe"]
-        self.assertEqual(question.criteria, {
-            "CWE-2": "Weakness 2: Definition 2", "CWE-4": "Weakness 4: Definition 4",
-        })
+        self.assertEqual(
+            question.criteria,
+            {
+                "CWE-2": "Weakness 2: Definition 2",
+                "CWE-4": "Weakness 4: Definition 4",
+            },
+        )
         self.assertIn("most specific option", question.instructions)
         self.assertEqual(selector.metadata["stop_style"], "parent")
-        self.assertEqual(selector.select("report", ["2", "3"]), {"2": .4, "3": .6})
+        self.assertEqual(selector.select("report", ["2", "3"]), {"2": 0.4, "3": 0.6})
         with self.assertRaises(ValueError):
             selector.select("report", ["2"], current="2")
         with self.assertRaises(ValueError):
@@ -95,21 +118,51 @@ class JevSelectorTests(unittest.TestCase):
     def test_rich_parent_options_list_common_descendants_and_aliases(self):
         import tempfile
         from pathlib import Path
-        from experiment.jev_selector import create_rich_parent_selector, write_frequencies
 
-        child = lambda parent: f"::NATURE:ChildOf:CWE ID:{parent}:VIEW ID:1000:ORDINAL:Primary::"
+        from experiment.jev_selector import (
+            create_rich_parent_selector,
+            write_frequencies,
+        )
+
+        child = lambda parent: (
+            f"::NATURE:ChildOf:CWE ID:{parent}:VIEW ID:1000:ORDINAL:Primary::"
+        )
         catalog = {
-            "1": {"Name": "Root", "Description": "D1", "Status": "Stable",
-                  "Related Weaknesses": "", "Alternate Terms": ""},
-            "2": {"Name": "Middle", "Description": "D2", "Status": "Stable",
-                  "Related Weaknesses": child(1), "Alternate Terms": ""},
-            "3": {"Name": "Leaf A", "Description": "D3", "Status": "Stable",
-                  "Related Weaknesses": child(2),
-                  "Alternate Terms": "::TERM:LA:DESCRIPTION:Short: name.::TERM:Alpha::"},
-            "4": {"Name": "Leaf B", "Description": "D4", "Status": "Stable",
-                  "Related Weaknesses": child(2), "Alternate Terms": ""},
-            "5": {"Name": "Other", "Description": "D5", "Status": "Stable",
-                  "Related Weaknesses": "", "Alternate Terms": ""},
+            "1": {
+                "Name": "Root",
+                "Description": "D1",
+                "Status": "Stable",
+                "Related Weaknesses": "",
+                "Alternate Terms": "",
+            },
+            "2": {
+                "Name": "Middle",
+                "Description": "D2",
+                "Status": "Stable",
+                "Related Weaknesses": child(1),
+                "Alternate Terms": "",
+            },
+            "3": {
+                "Name": "Leaf A",
+                "Description": "D3",
+                "Status": "Stable",
+                "Related Weaknesses": child(2),
+                "Alternate Terms": "::TERM:LA:DESCRIPTION:Short: name.::TERM:Alpha::",
+            },
+            "4": {
+                "Name": "Leaf B",
+                "Description": "D4",
+                "Status": "Stable",
+                "Related Weaknesses": child(2),
+                "Alternate Terms": "",
+            },
+            "5": {
+                "Name": "Other",
+                "Description": "D5",
+                "Status": "Stable",
+                "Related Weaknesses": "",
+                "Alternate Terms": "",
+            },
         }
         for label, row in catalog.items():
             row["CWE-ID"] = label
@@ -125,8 +178,12 @@ class JevSelectorTests(unittest.TestCase):
             path.write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
             frequencies = Path(directory) / "frequencies.json"
             write_frequencies(path, frequencies)
-            self.assertEqual(json.loads(frequencies.read_text())["counts"], {"4": 2, "3": 1})
-            selector = create_rich_parent_selector(catalog, frequencies=frequencies, limit=5)
+            self.assertEqual(
+                json.loads(frequencies.read_text())["counts"], {"4": 2, "3": 1}
+            )
+            selector = create_rich_parent_selector(
+                catalog, frequencies=frequencies, limit=5
+            )
         self.assertEqual(selector.includes, {"1": ["4", "3"], "2": ["4", "3"]})
         selector.select("report", ["1", "5"])
         criteria = self.client.system_one.call_args.kwargs["questions"]["cwe"].criteria
@@ -143,13 +200,15 @@ class JevSelectorTests(unittest.TestCase):
 
     def test_runs_flat_greedy_and_beam(self):
         graph = SimpleNamespace(
-            labels=self.catalog, roots=["1", "2"],
+            labels=self.catalog,
+            roots=["1", "2"],
             children={"1": {"3", "4"}, "2": {"5"}, "3": set(), "4": set(), "5": set()},
         )
         selector = JevSelector(self.catalog)
         flat = select_classify("report", graph, selector, top_k=2)
-        self.assertEqual((flat.predictions, flat.calls, flat.candidates_scored),
-                         (["5", "4"], 1, 5))
+        self.assertEqual(
+            (flat.predictions, flat.calls, flat.candidates_scored), (["5", "4"], 1, 5)
+        )
         greedy = select_classify("report", graph, selector, beam_width=1)
         self.assertEqual(greedy.paths, [["2", "5"]])
         beam = select_classify("report", graph, selector, beam_width=2, top_k=5)
@@ -159,8 +218,9 @@ class JevSelectorTests(unittest.TestCase):
     def test_rejects_bad_responses_and_settings(self):
         selector = JevSelector(self.catalog)
         self.client.system_one.side_effect = lambda **_: SimpleNamespace(
-            choices={"cwe": SimpleNamespace(probabilities={"CWE-1": .5})},
-            model="test-model-version", usage=SimpleNamespace(),
+            choices={"cwe": SimpleNamespace(probabilities={"CWE-1": 0.5})},
+            model="test-model-version",
+            usage=SimpleNamespace(),
         )
         with self.assertRaisesRegex(ValueError, "every offered option"):
             selector.select("report", ["1", "2"])
@@ -198,41 +258,64 @@ class InstalledSDKContractTests(unittest.TestCase):
         sent = []
 
         def handler(request):
-            self.assertEqual(str(request.url), "https://jev.example.invalid/api/v1/systemone")
+            self.assertEqual(
+                str(request.url), "https://jev.example.invalid/api/v1/systemone"
+            )
             payload = json.loads(request.content)
             sent.append(payload)
             options = list(payload["questions"]["cwe"]["criteria"])
-            return httpx2.Response(200, json={
-                "model": "test-resolved-version",
-                "answers": {"cwe": {
-                    "type": "choice", "choice": options[0], "confidence": .75,
-                    "probabilities": {option: (.75 if i == 0 else .25)
-                                      for i, option in enumerate(options)},
-                }},
-                "usage": {"input_tokens": 12, "output_tokens": 3},
-            })
+            return httpx2.Response(
+                200,
+                json={
+                    "model": "test-resolved-version",
+                    "answers": {
+                        "cwe": {
+                            "type": "choice",
+                            "choice": options[0],
+                            "confidence": 0.75,
+                            "probabilities": {
+                                option: (0.75 if i == 0 else 0.25)
+                                for i, option in enumerate(options)
+                            },
+                        }
+                    },
+                    "usage": {"input_tokens": 12, "output_tokens": 3},
+                },
+            )
 
         catalog = {
             "79": {"Name": "XSS", "Description": "Improper output neutralization"},
             "80": {"Name": "Basic XSS", "Description": "Script tags"},
         }
         with (
-            patch.dict("os.environ", {
-                "TYPESAFE_API_KEY": "unit-test-not-a-credential",
-                "TYPESAFE_DEFAULT_MODEL": "test-requested-version",
-            }),
-            patch.object(typesafe_sdk, "TypeSafeClient", side_effect=lambda **kwargs: real_client(
-                **kwargs, transport=httpx2.MockTransport(handler))),
+            patch.dict(
+                "os.environ",
+                {
+                    "TYPESAFE_API_KEY": "unit-test-not-a-credential",
+                    "TYPESAFE_DEFAULT_MODEL": "test-requested-version",
+                },
+            ),
+            patch.object(
+                typesafe_sdk,
+                "TypeSafeClient",
+                side_effect=lambda **kwargs: real_client(
+                    **kwargs, transport=httpx2.MockTransport(handler)
+                ),
+            ),
         ):
             selector = Selector(catalog, base_url="https://jev.example.invalid/api")
-            self.assertEqual(selector.select("report", ["80"], current="79"),
-                             {"80": .75, STOP: .25})
+            self.assertEqual(
+                selector.select("report", ["80"], current="79"),
+                {"80": 0.75, STOP: 0.25},
+            )
             question = sent[0]["questions"]["cwe"]
             self.assertEqual(sent[0]["model"], "test-requested-version")
             self.assertEqual(sent[0]["state"], {"document": "report"})
             self.assertEqual(question["type"], "choice")
             self.assertEqual(set(question["criteria"]), {"CWE-80", STOP})
-            self.assertEqual(selector.metadata["resolved_model"], "test-resolved-version")
+            self.assertEqual(
+                selector.metadata["resolved_model"], "test-resolved-version"
+            )
 
 
 if __name__ == "__main__":

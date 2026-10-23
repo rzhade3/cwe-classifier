@@ -39,8 +39,8 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from classification import STOP, CWEGraph, normalize_label
-from .benchmark import load_benchmark
 
+from .benchmark import load_benchmark
 
 _QUESTION = "cwe"
 MAX_OPTIONS = 255
@@ -49,13 +49,23 @@ MAX_OPTIONS = 255
 class JevSelector:
     max_options = MAX_OPTIONS
 
-    def __init__(self, catalog, *, stop_style="stop", base_url=None, model=None,
-                 timeout=None, includes=None, alternate_terms=False):
+    def __init__(
+        self,
+        catalog,
+        *,
+        stop_style="stop",
+        base_url=None,
+        model=None,
+        timeout=None,
+        includes=None,
+        alternate_terms=False,
+    ):
         if stop_style not in {"stop", "parent"}:
             raise ValueError("Jev stop_style must be 'stop' or 'parent'")
         self.stop_style = stop_style
         self.base_url = (
-            base_url if base_url is not None
+            base_url
+            if base_url is not None
             else os.environ.get("TYPESAFE_BASE_URL", "").strip() or None
         )
         if self.base_url is not None:
@@ -63,19 +73,34 @@ class JevSelector:
                 raise ValueError("Jev base_url must be a nonempty API root")
             self.base_url = self.base_url.strip().rstrip("/")
             endpoint = urlsplit(self.base_url)
-            if (endpoint.scheme not in {"https", "http"} or not endpoint.hostname
-                    or endpoint.port == 0
-                    or endpoint.username is not None or endpoint.password is not None
-                    or endpoint.query or endpoint.fragment
-                    or any(char.isspace() or ord(char) < 32 for char in self.base_url)):
-                raise ValueError("Jev base_url must be HTTP(S) without credentials, query, or fragment")
-            if endpoint.scheme == "http" and endpoint.hostname not in {"localhost", "127.0.0.1", "::1"}:
-                raise ValueError("Jev HTTP endpoints must be loopback; use HTTPS for remote services")
+            if (
+                endpoint.scheme not in {"https", "http"}
+                or not endpoint.hostname
+                or endpoint.port == 0
+                or endpoint.username is not None
+                or endpoint.password is not None
+                or endpoint.query
+                or endpoint.fragment
+                or any(char.isspace() or ord(char) < 32 for char in self.base_url)
+            ):
+                raise ValueError(
+                    "Jev base_url must be HTTP(S) without credentials, query, or fragment"
+                )
+            if endpoint.scheme == "http" and endpoint.hostname not in {
+                "localhost",
+                "127.0.0.1",
+                "::1",
+            }:
+                raise ValueError(
+                    "Jev HTTP endpoints must be loopback; use HTTPS for remote services"
+                )
         if model is not None and (not isinstance(model, str) or not model.strip()):
             raise ValueError("Jev model must be a nonempty string")
         if timeout is not None and (
-            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout) or timeout <= 0
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or timeout <= 0
         ):
             raise ValueError("Jev timeout must be positive and finite")
         try:
@@ -83,12 +108,15 @@ class JevSelector:
         except ModuleNotFoundError as error:
             if error.name != "typesafe_sdk":
                 raise
-            raise ImportError("Jev selection requires optional typesafe-sdk==0.7.4") from error
+            raise ImportError(
+                "Jev selection requires optional typesafe-sdk==0.7.4"
+            ) from error
 
         self._choice = Choice
         self.sdk_version = __version__
         self.requested_model = (
-            model.strip() if model is not None
+            model.strip()
+            if model is not None
             else os.environ.get("TYPESAFE_DEFAULT_MODEL", "").strip() or None
         )
         self.resolved_model = None
@@ -113,9 +141,11 @@ class JevSelector:
                 raise ValueError(f"Unknown CWE in includes for {label}")
             if members:
                 self.includes[label] = list(members)
-                self._option_criteria[label] += " Includes: " + "; ".join(
-                    self._names[member] for member in members
-                ) + "."
+                self._option_criteria[label] += (
+                    " Includes: "
+                    + "; ".join(self._names[member] for member in members)
+                    + "."
+                )
         options = {"model": self.requested_model, "retry": RetryPolicy(max_retries=0)}
         if self.base_url is not None:
             options["base_url"] = self.base_url
@@ -128,6 +158,12 @@ class JevSelector:
     def metadata(self):
         return {
             "base_url": self.base_url,
+            "prompt_sha256": hashlib.sha256(
+                json.dumps(
+                    [self._criteria, self._option_criteria, self.stop_style],
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest(),
             "requested_model": self.requested_model,
             "resolved_model": self.resolved_model,
             "sdk_version": self.sdk_version,
@@ -144,7 +180,10 @@ class JevSelector:
 
     def _reset_usage(self):
         self.last_usage = {
-            "input_tokens": None, "output_tokens": None, "cost": None, "requests": 0
+            "input_tokens": None,
+            "output_tokens": None,
+            "cost": None,
+            "requests": 0,
         }
 
     def select(self, text, labels, current=None):
@@ -191,7 +230,9 @@ class JevSelector:
         self.requests += 1
         response = self._client.system_one(
             state={"document": text},
-            questions={_QUESTION: self._choice(instructions=instructions, criteria=criteria)},
+            questions={
+                _QUESTION: self._choice(instructions=instructions, criteria=criteria)
+            },
         )
         for key in ("input_tokens", "output_tokens"):
             value = getattr(response.usage, key, None)
@@ -203,36 +244,46 @@ class JevSelector:
         if not isinstance(response.model, str) or not response.model.strip():
             raise ValueError("TypeSafe response must identify its model")
         if self.resolved_model is not None and response.model != self.resolved_model:
-            raise ValueError("TypeSafe response model changed; use an immutable model pin")
+            raise ValueError(
+                "TypeSafe response model changed; use an immutable model pin"
+            )
         self.resolved_model = response.model
         answer = response.choices.get(_QUESTION)
         if answer is None:
             raise ValueError("TypeSafe returned no CWE choice answer")
         probabilities = answer.probabilities
         if set(probabilities) != set(keys):
-            raise ValueError("TypeSafe must return a probability for every offered option")
+            raise ValueError(
+                "TypeSafe must return a probability for every offered option"
+            )
         result = {}
         for key, label in keys.items():
             value = probabilities[key]
-            if (isinstance(value, bool) or not isinstance(value, (int, float))
-                    or not math.isfinite(value) or not 0 <= value <= 1):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0 <= value <= 1
+            ):
                 raise ValueError(f"Invalid TypeSafe choice probability for {key}")
             result[label] = float(value)
         return result
 
-def create_selector(catalog):
-    return JevSelector(catalog)
+
+def create_selector(catalog, **options):
+    return JevSelector(catalog, **options)
 
 
-def create_parent_selector(catalog):
-    return JevSelector(catalog, stop_style="parent")
+def create_parent_selector(catalog, **options):
+    return JevSelector(catalog, stop_style="parent", **options)
 
 
 FREQUENCIES = Path(__file__).resolve().parent.parent / "data" / "cwe_frequencies.json"
 
 
-def create_rich_parent_selector(catalog, frequencies=FREQUENCIES, view="1000", limit=12,
-                                **options):
+def create_rich_parent_selector(
+    catalog, frequencies=FREQUENCIES, view="1000", limit=12, **options
+):
     """Parent-style selector whose options list common descendants and aliases.
 
     Each option with refinements gets "Includes: ..." naming up to ``limit``
@@ -244,7 +295,9 @@ def create_rich_parent_selector(catalog, frequencies=FREQUENCIES, view="1000", l
     return JevSelector(
         catalog,
         stop_style="parent",
-        includes=common_descendants(CWEGraph.from_rows(catalog.values(), view), counts, limit),
+        includes=common_descendants(
+            CWEGraph.from_rows(catalog.values(), view), counts, limit
+        ),
         alternate_terms=True,
         **options,
     )
@@ -258,11 +311,15 @@ def write_frequencies(benchmark, path=FREQUENCIES):
     )
     content = {
         "source": {
-            "benchmark_sha256": hashlib.sha256(Path(benchmark).read_bytes()).hexdigest(),
+            "benchmark_sha256": hashlib.sha256(
+                Path(benchmark).read_bytes()
+            ).hexdigest(),
             "split": "dev",
             "examples": len(records),
         },
-        "counts": dict(sorted(counts.items(), key=lambda item: (-item[1], int(item[0])))),
+        "counts": dict(
+            sorted(counts.items(), key=lambda item: (-item[1], int(item[0])))
+        ),
     }
     Path(path).write_text(json.dumps(content, indent=1) + "\n", encoding="utf-8")
     return content
